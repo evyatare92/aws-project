@@ -1,0 +1,117 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  Outbound internet for the app tier only (single NAT in the first AZ). Needed
+  so ECS tasks can reach external HTTPS APIs such as Open-Meteo. No inbound
+  paths are opened; the VPC still has no public workloads.
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: aws-project
+    AllowedPattern: '^[a-z0-9][a-z0-9-]{1,30}[a-z0-9]$'
+
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues: [dev, staging, prod]
+
+Resources:
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-igw'
+
+  InternetGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      InternetGatewayId: !Ref InternetGateway
+      VpcId: !ImportValue
+        'Fn::Sub': '${ProjectName}-${Environment}-VpcId'
+
+  # Carved from the free space documented in vpc.yaml (10.0.104.0/24).
+  NatPublicSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !ImportValue
+        'Fn::Sub': '${ProjectName}-${Environment}-VpcId'
+      AvailabilityZone: !Select [0, !GetAZs '']
+      CidrBlock: !Select [104, !Cidr [!ImportValue { 'Fn::Sub': '${ProjectName}-${Environment}-VpcCidr' }, 256, 8]]
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-nat-public-a'
+        - Key: Tier
+          Value: nat
+
+  NatPublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !ImportValue
+        'Fn::Sub': '${ProjectName}-${Environment}-VpcId'
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-nat-public'
+
+  NatPublicDefaultRoute:
+    Type: AWS::EC2::Route
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      RouteTableId: !Ref NatPublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  NatPublicSubnetAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref NatPublicSubnet
+      RouteTableId: !Ref NatPublicRouteTable
+
+  NatEip:
+    Type: AWS::EC2::EIP
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-nat-eip'
+
+  NatGateway:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NatEip.AllocationId
+      SubnetId: !Ref NatPublicSubnet
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-nat'
+
+  AppRouteNatA:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !ImportValue
+        'Fn::Sub': '${ProjectName}-${Environment}-AppRouteTableAId'
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGateway
+
+  AppRouteNatB:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !ImportValue
+        'Fn::Sub': '${ProjectName}-${Environment}-AppRouteTableBId'
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGateway
+
+  AppRouteNatC:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !ImportValue
+        'Fn::Sub': '${ProjectName}-${Environment}-AppRouteTableCId'
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGateway
+
+Outputs:
+  NatGatewayId:
+    Value: !Ref NatGateway
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-NatGatewayId'

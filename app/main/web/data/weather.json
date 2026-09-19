@@ -1,0 +1,66 @@
+{
+  "generatedAt": "2026-09-17T13:00:00Z",
+  "source": "dummy",
+  "cities": [
+    {
+      "id": "tel-aviv",
+      "city": "Tel Aviv",
+      "country": "Israel",
+      "timezone": "Asia/Jerusalem",
+      "condition": "sunny",
+      "conditionLabel": "Sunny",
+      "temperatureC": 29,
+      "feelsLikeC": 31,
+      "humidity": 62,
+      "windKph": 14
+    },
+    {
+      "id": "new-york",
+      "city": "New York",
+      "country": "United States",
+      "timezone": "America/New_York",
+      "condition": "partly-cloudy",
+      "conditionLabel": "Partly cloudy",
+      "temperatureC": 18,
+      "feelsLikeC": 17,
+      "humidity": 54,
+      "windKph": 21
+    },
+    {
+      "id": "barcelona",
+      "city": "Barcelona",
+      "country": "Spain",
+      "timezone": "Europe/Madrid",
+      "condition": "sunny",
+      "conditionLabel": "Sunny",
+      "temperatureC": 24,
+      "feelsLikeC": 25,
+      "humidity": 68,
+      "windKph": 12
+    },
+    {
+      "id": "bangkok",
+      "city": "Bangkok",
+      "country": "Thailand",
+      "timezone": "Asia/Bangkok",
+      "condition": "thunderstorm",
+      "conditionLabel": "Thunderstorms",
+      "temperatureC": 33,
+      "feelsLikeC": 39,
+      "humidity": 79,
+      "windKph": 9
+    },
+    {
+      "id": "tokyo",
+      "city": "Tokyo",
+      "country": "Japan",
+      "timezone": "Asia/Tokyo",
+      "condition": "rain",
+      "conditionLabel": "Light rain",
+      "temperatureC": 26,
+      "feelsLikeC": 28,
+      "humidity": 74,
+      "windKph": 17
+    }
+  ]
+}

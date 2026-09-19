@@ -1,0 +1,377 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  VPC endpoints. With no NAT gateway these are the only way anything in the VPC
+  reaches an AWS API. Start with the minimum set needed to log in, pull images
+  and write logs; add more endpoints here as services are introduced.
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: aws-project
+    AllowedPattern: '^[a-z0-9][a-z0-9-]{1,30}[a-z0-9]$'
+
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues: [dev, staging, prod]
+
+  EndpointAvailability:
+    Type: String
+    Default: single-az
+    AllowedValues: [single-az, multi-az]
+    Description: >-
+      Interface endpoints bill per ENI per hour, so multi-az costs 3x. single-az
+      still resolves from every AZ (traffic just crosses AZ boundaries) and is
+      fine for dev; use multi-az for prod.
+
+Conditions:
+  UseMultiAz: !Equals [!Ref EndpointAvailability, multi-az]
+
+Resources:
+  EndpointSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !Sub 'HTTPS from within the VPC to ${ProjectName}-${Environment} interface endpoints'
+      VpcId: !ImportValue
+        'Fn::Sub': '${ProjectName}-${Environment}-VpcId'
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: !ImportValue
+            'Fn::Sub': '${ProjectName}-${Environment}-VpcCidr'
+          Description: HTTPS from the VPC
+      SecurityGroupEgress:
+        - IpProtocol: '-1'
+          CidrIp: 0.0.0.0/0
+          Description: All outbound traffic
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-endpoints'
+
+  # --- Gateway endpoints (no hourly charge, no ENI) --------------------------
+
+  S3Endpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !ImportValue
+        'Fn::Sub': '${ProjectName}-${Environment}-VpcId'
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.s3'
+      VpcEndpointType: Gateway
+      RouteTableIds: !Split
+        - ','
+        - !ImportValue
+          'Fn::Sub': '${ProjectName}-${Environment}-RouteTableIds'
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-vpce-s3'
+
+  DynamoDbEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !ImportValue
+        'Fn::Sub': '${ProjectName}-${Environment}-VpcId'
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.dynamodb'
+      VpcEndpointType: Gateway
+      RouteTableIds: !Split
+        - ','
+        - !ImportValue
+          'Fn::Sub': '${ProjectName}-${Environment}-RouteTableIds'
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-vpce-dynamodb'
+
+  # --- Interface endpoints ---------------------------------------------------
+  # SSM trio: Session Manager access to instances without SSH or open ports.
+
+  SsmEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !ImportValue
+        'Fn::Sub': '${ProjectName}-${Environment}-VpcId'
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.ssm'
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SecurityGroupIds: [!Ref EndpointSecurityGroup]
+      SubnetIds: !If
+        - UseMultiAz
+        - !Split [',', !ImportValue { 'Fn::Sub': '${ProjectName}-${Environment}-EndpointSubnetIds' }]
+        - - !Select [0, !Split [',', !ImportValue { 'Fn::Sub': '${ProjectName}-${Environment}-EndpointSubnetIds' }]]
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-vpce-ssm'
+
+  SsmMessagesEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !ImportValue
+        'Fn::Sub': '${ProjectName}-${Environment}-VpcId'
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.ssmmessages'
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SecurityGroupIds: [!Ref EndpointSecurityGroup]
+      SubnetIds: !If
+        - UseMultiAz
+        - !Split [',', !ImportValue { 'Fn::Sub': '${ProjectName}-${Environment}-EndpointSubnetIds' }]
+        - - !Select [0, !Split [',', !ImportValue { 'Fn::Sub': '${ProjectName}-${Environment}-EndpointSubnetIds' }]]
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-vpce-ssmmessages'
+
+  Ec2MessagesEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !ImportValue
+        'Fn::Sub': '${ProjectName}-${Environment}-VpcId'
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.ec2messages'
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SecurityGroupIds: [!Ref EndpointSecurityGroup]
+      SubnetIds: !If
+        - UseMultiAz
+        - !Split [',', !ImportValue { 'Fn::Sub': '${ProjectName}-${Environment}-EndpointSubnetIds' }]
+        - - !Select [0, !Split [',', !ImportValue { 'Fn::Sub': '${ProjectName}-${Environment}-EndpointSubnetIds' }]]
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-vpce-ec2messages'
+
+  # ECR needs both endpoints plus the S3 gateway endpoint above: api for auth
+  # and metadata, dkr for the registry protocol, S3 for the actual layers.
+
+  EcrApiEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !ImportValue
+        'Fn::Sub': '${ProjectName}-${Environment}-VpcId'
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.ecr.api'
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SecurityGroupIds: [!Ref EndpointSecurityGroup]
+      SubnetIds: !If
+        - UseMultiAz
+        - !Split [',', !ImportValue { 'Fn::Sub': '${ProjectName}-${Environment}-EndpointSubnetIds' }]
+        - - !Select [0, !Split [',', !ImportValue { 'Fn::Sub': '${ProjectName}-${Environment}-EndpointSubnetIds' }]]
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-vpce-ecr-api'
+
+  EcrDkrEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !ImportValue
+        'Fn::Sub': '${ProjectName}-${Environment}-VpcId'
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.ecr.dkr'
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SecurityGroupIds: [!Ref EndpointSecurityGroup]
+      SubnetIds: !If
+        - UseMultiAz
+        - !Split [',', !ImportValue { 'Fn::Sub': '${ProjectName}-${Environment}-EndpointSubnetIds' }]
+        - - !Select [0, !Split [',', !ImportValue { 'Fn::Sub': '${ProjectName}-${Environment}-EndpointSubnetIds' }]]
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-vpce-ecr-dkr'
+
+  LogsEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !ImportValue
+        'Fn::Sub': '${ProjectName}-${Environment}-VpcId'
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.logs'
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SecurityGroupIds: [!Ref EndpointSecurityGroup]
+      SubnetIds: !If
+        - UseMultiAz
+        - !Split [',', !ImportValue { 'Fn::Sub': '${ProjectName}-${Environment}-EndpointSubnetIds' }]
+        - - !Select [0, !Split [',', !ImportValue { 'Fn::Sub': '${ProjectName}-${Environment}-EndpointSubnetIds' }]]
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-vpce-logs'
+
+  StsEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !ImportValue
+        'Fn::Sub': '${ProjectName}-${Environment}-VpcId'
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.sts'
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SecurityGroupIds: [!Ref EndpointSecurityGroup]
+      SubnetIds: !If
+        - UseMultiAz
+        - !Split [',', !ImportValue { 'Fn::Sub': '${ProjectName}-${Environment}-EndpointSubnetIds' }]
+        - - !Select [0, !Split [',', !ImportValue { 'Fn::Sub': '${ProjectName}-${Environment}-EndpointSubnetIds' }]]
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-vpce-sts'
+
+  # --- EKS: nodes and load balancers need these in a NAT-less VPC ------------
+
+  Ec2Endpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !ImportValue
+        'Fn::Sub': '${ProjectName}-${Environment}-VpcId'
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.ec2'
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SecurityGroupIds: [!Ref EndpointSecurityGroup]
+      SubnetIds: !If
+        - UseMultiAz
+        - !Split [',', !ImportValue { 'Fn::Sub': '${ProjectName}-${Environment}-EndpointSubnetIds' }]
+        - - !Select [0, !Split [',', !ImportValue { 'Fn::Sub': '${ProjectName}-${Environment}-EndpointSubnetIds' }]]
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-vpce-ec2'
+
+  EksEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !ImportValue
+        'Fn::Sub': '${ProjectName}-${Environment}-VpcId'
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.eks'
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SecurityGroupIds: [!Ref EndpointSecurityGroup]
+      SubnetIds: !If
+        - UseMultiAz
+        - !Split [',', !ImportValue { 'Fn::Sub': '${ProjectName}-${Environment}-EndpointSubnetIds' }]
+        - - !Select [0, !Split [',', !ImportValue { 'Fn::Sub': '${ProjectName}-${Environment}-EndpointSubnetIds' }]]
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-vpce-eks'
+
+  AutoscalingEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !ImportValue
+        'Fn::Sub': '${ProjectName}-${Environment}-VpcId'
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.autoscaling'
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SecurityGroupIds: [!Ref EndpointSecurityGroup]
+      SubnetIds: !If
+        - UseMultiAz
+        - !Split [',', !ImportValue { 'Fn::Sub': '${ProjectName}-${Environment}-EndpointSubnetIds' }]
+        - - !Select [0, !Split [',', !ImportValue { 'Fn::Sub': '${ProjectName}-${Environment}-EndpointSubnetIds' }]]
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-vpce-autoscaling'
+
+  ElasticLoadBalancingEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !ImportValue
+        'Fn::Sub': '${ProjectName}-${Environment}-VpcId'
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.elasticloadbalancing'
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SecurityGroupIds: [!Ref EndpointSecurityGroup]
+      SubnetIds: !If
+        - UseMultiAz
+        - !Split [',', !ImportValue { 'Fn::Sub': '${ProjectName}-${Environment}-EndpointSubnetIds' }]
+        - - !Select [0, !Split [',', !ImportValue { 'Fn::Sub': '${ProjectName}-${Environment}-EndpointSubnetIds' }]]
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-vpce-elb'
+
+  # --- ECS: Fargate task scheduling and Secrets Manager for task secrets ----
+
+  EcsEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !ImportValue
+        'Fn::Sub': '${ProjectName}-${Environment}-VpcId'
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.ecs'
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SecurityGroupIds: [!Ref EndpointSecurityGroup]
+      SubnetIds: !If
+        - UseMultiAz
+        - !Split [',', !ImportValue { 'Fn::Sub': '${ProjectName}-${Environment}-EndpointSubnetIds' }]
+        - - !Select [0, !Split [',', !ImportValue { 'Fn::Sub': '${ProjectName}-${Environment}-EndpointSubnetIds' }]]
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-vpce-ecs'
+
+  SecretsManagerEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !ImportValue
+        'Fn::Sub': '${ProjectName}-${Environment}-VpcId'
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.secretsmanager'
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SecurityGroupIds: [!Ref EndpointSecurityGroup]
+      SubnetIds: !If
+        - UseMultiAz
+        - !Split [',', !ImportValue { 'Fn::Sub': '${ProjectName}-${Environment}-EndpointSubnetIds' }]
+        - - !Select [0, !Split [',', !ImportValue { 'Fn::Sub': '${ProjectName}-${Environment}-EndpointSubnetIds' }]]
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-vpce-secretsmanager'
+
+  # --- Lambda: private API Gateway, function ENIs, and SQS event source --------
+
+  ExecuteApiEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !ImportValue
+        'Fn::Sub': '${ProjectName}-${Environment}-VpcId'
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.execute-api'
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SecurityGroupIds: [!Ref EndpointSecurityGroup]
+      SubnetIds: !If
+        - UseMultiAz
+        - !Split [',', !ImportValue { 'Fn::Sub': '${ProjectName}-${Environment}-EndpointSubnetIds' }]
+        - - !Select [0, !Split [',', !ImportValue { 'Fn::Sub': '${ProjectName}-${Environment}-EndpointSubnetIds' }]]
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-vpce-execute-api'
+
+  LambdaEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !ImportValue
+        'Fn::Sub': '${ProjectName}-${Environment}-VpcId'
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.lambda'
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SecurityGroupIds: [!Ref EndpointSecurityGroup]
+      SubnetIds: !If
+        - UseMultiAz
+        - !Split [',', !ImportValue { 'Fn::Sub': '${ProjectName}-${Environment}-EndpointSubnetIds' }]
+        - - !Select [0, !Split [',', !ImportValue { 'Fn::Sub': '${ProjectName}-${Environment}-EndpointSubnetIds' }]]
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-vpce-lambda'
+
+  SqsEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !ImportValue
+        'Fn::Sub': '${ProjectName}-${Environment}-VpcId'
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.sqs'
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SecurityGroupIds: [!Ref EndpointSecurityGroup]
+      SubnetIds: !If
+        - UseMultiAz
+        - !Split [',', !ImportValue { 'Fn::Sub': '${ProjectName}-${Environment}-EndpointSubnetIds' }]
+        - - !Select [0, !Split [',', !ImportValue { 'Fn::Sub': '${ProjectName}-${Environment}-EndpointSubnetIds' }]]
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-vpce-sqs'
+
+Outputs:
+  EndpointSecurityGroupId:
+    Value: !Ref EndpointSecurityGroup
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-EndpointSecurityGroupId'
+
+  ExecuteApiEndpointId:
+    Value: !Ref ExecuteApiEndpoint
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-ExecuteApiEndpointId'

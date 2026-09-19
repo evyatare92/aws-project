@@ -1,0 +1,186 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  Private ECS cluster on Fargate. Tasks run in app subnets with no public IP.
+  Fargate services should set PlatformVersion to LATEST (currently Linux 1.4.0).
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: aws-project
+    AllowedPattern: '^[a-z0-9][a-z0-9-]{1,30}[a-z0-9]$'
+
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues: [dev, staging, prod]
+
+  FargatePlatformVersion:
+    Type: String
+    Default: LATEST
+    AllowedValues: [LATEST, '1.4.0']
+    Description: >-
+      Platform version for Fargate services and standalone tasks. LATEST tracks
+      the newest Fargate Linux revision (1.4.0 as of 2026).
+
+Resources:
+  EcsCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !Sub '${ProjectName}-${Environment}-ecs'
+      CapacityProviders:
+        - FARGATE
+        - FARGATE_SPOT
+      DefaultCapacityProviderStrategy:
+        - CapacityProvider: FARGATE
+          Weight: 1
+          Base: 1
+        - CapacityProvider: FARGATE_SPOT
+          Weight: 4
+      ClusterSettings:
+        - Name: containerInsights
+          Value: enabled
+      Configuration:
+        ExecuteCommandConfiguration:
+          Logging: DEFAULT
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-ecs'
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+
+  TaskExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectName}-${Environment}-ecs-execution'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-ecs-execution'
+
+  TaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectName}-${Environment}-ecs-task'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: project-resource-access
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: S3ProjectBuckets
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:DeleteObject
+                  - s3:ListBucket
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:s3:::${ProjectName}-${Environment}-*'
+                  - !Sub 'arn:${AWS::Partition}:s3:::${ProjectName}-${Environment}-*/*'
+              - Sid: SecretsManagerRead
+                Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                  - secretsmanager:DescribeSecret
+                Resource: !Sub 'arn:${AWS::Partition}:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${ProjectName}/${Environment}/*'
+              - Sid: DynamoDbProjectTables
+                Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:DeleteItem
+                  - dynamodb:Query
+                  - dynamodb:Scan
+                  - dynamodb:BatchGetItem
+                  - dynamodb:BatchWriteItem
+                  - dynamodb:DescribeTable
+                Resource: !Sub 'arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${ProjectName}-${Environment}-*'
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-ecs-task'
+
+  TasksSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !Sub 'Fargate tasks for ${ProjectName}-${Environment}-ecs'
+      VpcId: !ImportValue
+        'Fn::Sub': '${ProjectName}-${Environment}-VpcId'
+      SecurityGroupIngress:
+        - IpProtocol: '-1'
+          CidrIp: !ImportValue
+            'Fn::Sub': '${ProjectName}-${Environment}-VpcCidr'
+          Description: Internal traffic from within the VPC
+      SecurityGroupEgress:
+        - IpProtocol: '-1'
+          CidrIp: 0.0.0.0/0
+          Description: All outbound traffic
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-ecs-tasks'
+
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      LogGroupName: !Sub '/ecs/${ProjectName}-${Environment}'
+      RetentionInDays: 14
+
+Outputs:
+  ClusterName:
+    Value: !Ref EcsCluster
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-EcsClusterName'
+
+  ClusterArn:
+    Value: !GetAtt EcsCluster.Arn
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-EcsClusterArn'
+
+  TaskExecutionRoleArn:
+    Value: !GetAtt TaskExecutionRole.Arn
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-EcsTaskExecutionRoleArn'
+
+  TaskRoleArn:
+    Value: !GetAtt TaskRole.Arn
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-EcsTaskRoleArn'
+
+  TasksSecurityGroupId:
+    Value: !Ref TasksSecurityGroup
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-EcsTasksSecurityGroupId'
+
+  AppSubnetIds:
+    Value: !ImportValue
+      'Fn::Sub': '${ProjectName}-${Environment}-AppSubnetIds'
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-EcsAppSubnetIds'
+
+  FargatePlatformVersion:
+    Value: !Ref FargatePlatformVersion
+    Description: Set this on AWS::ECS::Service PlatformVersion when creating services.
+
+  ServiceTemplateHint:
+    Value: !Sub >-
+      Use LaunchType FARGATE, PlatformVersion ${FargatePlatformVersion},
+      AssignPublicIp DISABLED, subnets from AppSubnetIds export,
+      security group ${TasksSecurityGroup}.

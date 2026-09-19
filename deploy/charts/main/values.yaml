@@ -1,0 +1,70 @@
+replicaCount: 2
+
+image:
+  repository: 034971967415.dkr.ecr.eu-west-1.amazonaws.com/aws-project-dev/main
+  # Rewritten by "make charts-stage" from app/main/.version. Do not set this to
+  # a mutable tag like "latest": nodes that already cached it never pull again.
+  tag: "1.2.1"
+  pullPolicy: IfNotPresent
+
+serviceAccount:
+  create: true
+  name: ""
+
+service:
+  # NodePort rather than LoadBalancer: this VPC has no internet route and no
+  # AWS Load Balancer Controller, so the bastion reaches the app on the node
+  # port and SSM forwards it to your PC.
+  type: NodePort
+  port: 80
+  targetPort: 8080
+  nodePort: 30080
+
+# The node image's built-in "node" user is uid 1000 and binds 8080, so nothing
+# here needs root.
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  runAsGroup: 1000
+  fsGroup: 1000
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+
+resources:
+  requests:
+    cpu: 10m
+    memory: 32Mi
+  limits:
+    cpu: 200m
+    memory: 128Mi
+
+livenessProbe:
+  httpGet:
+    path: /healthz
+    port: http
+  initialDelaySeconds: 5
+  periodSeconds: 15
+
+readinessProbe:
+  httpGet:
+    path: /healthz
+    port: http
+  initialDelaySeconds: 2
+  periodSeconds: 10
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+weather:
+  # Where the app's backend calls for live data. ECS Cloud Map name from
+  # infra/31-ecs/weather-service.yaml; only resolves inside the VPC.
+  # Blank disables live lookups and the app serves placeholder data.
+  serviceUrl: http://weather.aws-project-dev.local:8080

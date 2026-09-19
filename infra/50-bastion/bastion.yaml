@@ -1,0 +1,230 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  SSM Session Manager bastion. A private instance with no public IP, no SSH key
+  and no inbound security group rules: access arrives over the ssm/ssmmessages/
+  ec2messages VPC endpoints, so your PC reaches it through the AWS API.
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: aws-project
+    AllowedPattern: '^[a-z0-9][a-z0-9-]{1,30}[a-z0-9]$'
+
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues: [dev, staging, prod]
+
+  InstanceType:
+    Type: String
+    Default: t3.micro
+
+  AmiId:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64
+    Description: Resolved from the public SSM parameter, so it tracks the latest AL2023 AMI.
+
+  GrantEksClusterAdmin:
+    Type: String
+    Default: 'yes'
+    AllowedValues: ['yes', 'no']
+    Description: >-
+      Create an EKS access entry for the bastion role so kubectl works. Requires
+      the EKS stack to be deployed first. Set to no if it is not.
+
+  AppNodePort:
+    Type: Number
+    Default: 30080
+    MinValue: 30000
+    MaxValue: 32767
+    Description: >-
+      NodePort the web app Service listens on. The bastion connects here and
+      SSM forwards it to your PC, so it must match service.nodePort in the chart.
+
+Conditions:
+  WithEksAccess: !Equals [!Ref GrantEksClusterAdmin, 'yes']
+
+Resources:
+  BastionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectName}-${Environment}-bastion'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        # Everything Session Manager needs; no inbound ports, no SSH keys.
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Policies:
+        - PolicyName: operator-access
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: EksDescribeForKubeconfig
+                Effect: Allow
+                Action:
+                  - eks:DescribeCluster
+                  - eks:ListClusters
+                Resource: '*'
+              - Sid: EcsAndSqsInspection
+                Effect: Allow
+                Action:
+                  - ecs:List*
+                  - ecs:Describe*
+                  - sqs:ListQueues
+                  - sqs:GetQueueUrl
+                  - sqs:GetQueueAttributes
+                  - sqs:SendMessage
+                  - sqs:ReceiveMessage
+                Resource: '*'
+              - Sid: ReadArtifactsBucket
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:ListBucket
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:s3:::${ProjectName}-${Environment}-artifacts-${AWS::AccountId}-${AWS::Region}'
+                  - !Sub 'arn:${AWS::Partition}:s3:::${ProjectName}-${Environment}-artifacts-${AWS::AccountId}-${AWS::Region}/*'
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-bastion'
+
+  BastionInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      InstanceProfileName: !Sub '${ProjectName}-${Environment}-bastion'
+      Roles:
+        - !Ref BastionRole
+
+  BastionSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !Sub 'SSM bastion for ${ProjectName}-${Environment} (no inbound)'
+      VpcId: !ImportValue
+        'Fn::Sub': '${ProjectName}-${Environment}-VpcId'
+      SecurityGroupEgress:
+        - IpProtocol: '-1'
+          CidrIp: 0.0.0.0/0
+          Description: All outbound traffic
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-bastion'
+
+  BastionInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref AmiId
+      InstanceType: !Ref InstanceType
+      IamInstanceProfile: !Ref BastionInstanceProfile
+      SubnetId: !Select
+        - 0
+        - !Split
+          - ','
+          - !ImportValue
+            'Fn::Sub': '${ProjectName}-${Environment}-AppSubnetIds'
+      SecurityGroupIds:
+        - !Ref BastionSecurityGroup
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            VolumeSize: 20
+            VolumeType: gp3
+            Encrypted: true
+            DeleteOnTermination: true
+      MetadataOptions:
+        HttpTokens: required
+        HttpEndpoint: enabled
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          set -uxo pipefail
+
+          # This VPC has no NAT, so dnf and dl.k8s.io are unreachable. kubectl and
+          # helm are pulled from the artifacts bucket via the S3 gateway endpoint;
+          # run "make bastion-tools" from the repo root to stage them there first.
+          BUCKET="${ProjectName}-${Environment}-artifacts-${AWS::AccountId}-${AWS::Region}"
+
+          sudo aws s3 cp "s3://$BUCKET/bastion-tools/kubectl" /usr/local/bin/kubectl \
+            && sudo chmod 0755 /usr/local/bin/kubectl
+
+          sudo aws s3 cp "s3://$BUCKET/bastion-tools/helm" /usr/local/bin/helm \
+            && sudo chmod 0755 /usr/local/bin/helm
+
+          # Best effort: harmless if the cluster is not reachable yet.
+          aws eks update-kubeconfig \
+            --name "${ProjectName}-${Environment}" \
+            --region "${AWS::Region}" \
+            --kubeconfig /root/.kube/config || true
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-bastion'
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+
+  # Lets the bastion's instance role run kubectl against the private API.
+  BastionEksAccessEntry:
+    Type: AWS::EKS::AccessEntry
+    Condition: WithEksAccess
+    Properties:
+      ClusterName: !ImportValue
+        'Fn::Sub': '${ProjectName}-${Environment}-EksClusterName'
+      PrincipalArn: !GetAtt BastionRole.Arn
+      Type: STANDARD
+      Username: bastion
+      AccessPolicies:
+        - AccessScope:
+            Type: cluster
+          PolicyArn: arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy
+
+  # The EKS control plane only accepts API traffic from its own security group.
+  EksApiFromBastion:
+    Type: AWS::EC2::SecurityGroupIngress
+    Condition: WithEksAccess
+    Properties:
+      GroupId: !ImportValue
+        'Fn::Sub': '${ProjectName}-${Environment}-EksClusterSecurityGroupId'
+      IpProtocol: tcp
+      FromPort: 443
+      ToPort: 443
+      SourceSecurityGroupId: !Ref BastionSecurityGroup
+      Description: Kubernetes API from the bastion
+
+  # Lets "make app-forward" tunnel from your PC to the app: SSM connects the
+  # bastion to a node on the Service's NodePort.
+  AppNodePortFromBastion:
+    Type: AWS::EC2::SecurityGroupIngress
+    Condition: WithEksAccess
+    Properties:
+      GroupId: !ImportValue
+        'Fn::Sub': '${ProjectName}-${Environment}-EksNodeSecurityGroupId'
+      IpProtocol: tcp
+      FromPort: !Ref AppNodePort
+      ToPort: !Ref AppNodePort
+      SourceSecurityGroupId: !Ref BastionSecurityGroup
+      Description: Web app NodePort from the bastion
+
+Outputs:
+  BastionInstanceId:
+    Value: !Ref BastionInstance
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-BastionInstanceId'
+
+  BastionRoleArn:
+    Value: !GetAtt BastionRole.Arn
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-BastionRoleArn'
+
+  BastionSecurityGroupId:
+    Value: !Ref BastionSecurityGroup
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-BastionSecurityGroupId'
+
+  ConnectCommand:
+    Description: Requires the session-manager-plugin installed on your PC.
+    Value: !Sub 'aws ssm start-session --region ${AWS::Region} --target ${BastionInstance}'

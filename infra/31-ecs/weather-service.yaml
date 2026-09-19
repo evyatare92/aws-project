@@ -1,0 +1,145 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  Fargate service that fetches live weather from Open-Meteo for supported cities.
+  Registered in Cloud Map as weather.${ProjectName}-${Environment}.local so EKS
+  pods can reach it over the private VPC.
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: aws-project
+    AllowedPattern: '^[a-z0-9][a-z0-9-]{1,30}[a-z0-9]$'
+
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues: [dev, staging, prod]
+
+  ImageTag:
+    Type: String
+    Default: latest
+
+  DesiredCount:
+    Type: Number
+    Default: 1
+    MinValue: 0
+
+  ContainerPort:
+    Type: Number
+    Default: 8080
+
+Resources:
+  ServiceDiscoveryNamespace:
+    Type: AWS::ServiceDiscovery::PrivateDnsNamespace
+    Properties:
+      Name: !Sub '${ProjectName}-${Environment}.local'
+      Vpc: !ImportValue
+        'Fn::Sub': '${ProjectName}-${Environment}-VpcId'
+      Description: !Sub 'Private DNS for ${ProjectName}-${Environment} microservices'
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}.local'
+
+  WeatherDiscoveryService:
+    Type: AWS::ServiceDiscovery::Service
+    Properties:
+      Name: weather
+      NamespaceId: !Ref ServiceDiscoveryNamespace
+      Description: ECS weather API
+      DnsConfig:
+        RoutingPolicy: MULTIVALUE
+        DnsRecords:
+          - Type: A
+            TTL: 10
+      HealthCheckCustomConfig:
+        FailureThreshold: 1
+
+  WeatherLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      LogGroupName: !Sub '/ecs/${ProjectName}-${Environment}/weather'
+      RetentionInDays: 14
+
+  WeatherTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub '${ProjectName}-${Environment}-weather'
+      Cpu: '256'
+      Memory: '512'
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+      ExecutionRoleArn: !ImportValue
+        'Fn::Sub': '${ProjectName}-${Environment}-EcsTaskExecutionRoleArn'
+      TaskRoleArn: !ImportValue
+        'Fn::Sub': '${ProjectName}-${Environment}-EcsTaskRoleArn'
+      ContainerDefinitions:
+        - Name: weather
+          Image: !Sub '${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${ProjectName}-${Environment}/weather:${ImageTag}'
+          Essential: true
+          PortMappings:
+            - ContainerPort: !Ref ContainerPort
+              Protocol: tcp
+          Environment:
+            - Name: PORT
+              Value: !Ref ContainerPort
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref WeatherLogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: weather
+          HealthCheck:
+            Command:
+              - CMD-SHELL
+              - !Sub 'wget -qO- http://127.0.0.1:${ContainerPort}/healthz || exit 1'
+            Interval: 30
+            Timeout: 5
+            Retries: 3
+            StartPeriod: 10
+
+  WeatherService:
+    Type: AWS::ECS::Service
+    Properties:
+      ServiceName: weather
+      Cluster: !ImportValue
+        'Fn::Sub': '${ProjectName}-${Environment}-EcsClusterName'
+      LaunchType: FARGATE
+      PlatformVersion: LATEST
+      DesiredCount: !Ref DesiredCount
+      EnableExecuteCommand: true
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: DISABLED
+          Subnets: !Split
+            - ','
+            - !ImportValue
+              'Fn::Sub': '${ProjectName}-${Environment}-EcsAppSubnetIds'
+          SecurityGroups:
+            - !ImportValue
+              'Fn::Sub': '${ProjectName}-${Environment}-EcsTasksSecurityGroupId'
+      TaskDefinition: !Ref WeatherTaskDefinition
+      ServiceRegistries:
+        - RegistryArn: !GetAtt WeatherDiscoveryService.Arn
+      DeploymentConfiguration:
+        MinimumHealthyPercent: 100
+        MaximumPercent: 200
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-weather'
+
+Outputs:
+  WeatherServiceName:
+    Value: !GetAtt WeatherService.Name
+
+  WeatherServiceDnsName:
+    Value: !Sub 'weather.${ProjectName}-${Environment}.local'
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-WeatherServiceDnsName'
+
+  WeatherServiceUrl:
+    Value: !Sub 'http://weather.${ProjectName}-${Environment}.local:${ContainerPort}'
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-WeatherServiceUrl'

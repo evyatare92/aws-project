@@ -1,0 +1,375 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  Private VPC across 3 AZs. No internet gateway and no NAT gateway, so nothing in
+  here can reach or be reached from the internet. Tiered subnets: app (large,
+  sized for EKS VPC CNI pod IPs), data, and a small tier for VPC endpoint ENIs.
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: aws-project
+    AllowedPattern: '^[a-z0-9][a-z0-9-]{1,30}[a-z0-9]$'
+
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues: [dev, staging, prod]
+
+  VpcCidr:
+    Type: String
+    Default: 10.0.0.0/16
+    # Must be a /16: the subnet layout below carves fixed offsets out of a /16.
+    # Resulting map (for 10.0.0.0/16):
+    #   app       10.0.0.0/19   10.0.32.0/19  10.0.64.0/19   (8187 IPs each)
+    #   data      10.0.96.0/24  10.0.97.0/24  10.0.98.0/24
+    #   endpoints 10.0.100.0/24 10.0.101.0/24 10.0.102.0/24
+    #   free      10.0.104.0 - 10.0.255.255
+    AllowedPattern: '^(10|172|192)\.\d{1,3}\.0\.0/16$'
+    ConstraintDescription: Must be a private /16 range, e.g. 10.0.0.0/16.
+
+  FlowLogRetentionInDays:
+    Type: Number
+    Default: 14
+    AllowedValues: [1, 3, 5, 7, 14, 30, 60, 90, 180, 365]
+
+Resources:
+  Vpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VpcCidr
+      # Both required for VPC endpoint private DNS to resolve.
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      InstanceTenancy: default
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}'
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+
+  # --- App subnets: EKS nodes and pods, ECS tasks, EC2, Lambda ENIs ----------
+
+  AppSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      AvailabilityZone: !Select [0, !GetAZs '']
+      CidrBlock: !Select [0, !Cidr [!Ref VpcCidr, 8, 13]]
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-app-a'
+        - Key: Tier
+          Value: app
+        - Key: kubernetes.io/role/internal-elb
+          Value: '1'
+        - Key: !Sub 'kubernetes.io/cluster/${ProjectName}-${Environment}'
+          Value: shared
+
+  AppSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      AvailabilityZone: !Select [1, !GetAZs '']
+      CidrBlock: !Select [1, !Cidr [!Ref VpcCidr, 8, 13]]
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-app-b'
+        - Key: Tier
+          Value: app
+        - Key: kubernetes.io/role/internal-elb
+          Value: '1'
+        - Key: !Sub 'kubernetes.io/cluster/${ProjectName}-${Environment}'
+          Value: shared
+
+  AppSubnetC:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      AvailabilityZone: !Select [2, !GetAZs '']
+      CidrBlock: !Select [2, !Cidr [!Ref VpcCidr, 8, 13]]
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-app-c'
+        - Key: Tier
+          Value: app
+        - Key: kubernetes.io/role/internal-elb
+          Value: '1'
+        - Key: !Sub 'kubernetes.io/cluster/${ProjectName}-${Environment}'
+          Value: shared
+
+  # --- Data subnets: RDS, ElastiCache, anything that must never egress -------
+
+  DataSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      AvailabilityZone: !Select [0, !GetAZs '']
+      CidrBlock: !Select [96, !Cidr [!Ref VpcCidr, 256, 8]]
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-data-a'
+        - Key: Tier
+          Value: data
+
+  DataSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      AvailabilityZone: !Select [1, !GetAZs '']
+      CidrBlock: !Select [97, !Cidr [!Ref VpcCidr, 256, 8]]
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-data-b'
+        - Key: Tier
+          Value: data
+
+  DataSubnetC:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      AvailabilityZone: !Select [2, !GetAZs '']
+      CidrBlock: !Select [98, !Cidr [!Ref VpcCidr, 256, 8]]
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-data-c'
+        - Key: Tier
+          Value: data
+
+  # --- Endpoint subnets: interface endpoint ENIs only ------------------------
+
+  EndpointSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      AvailabilityZone: !Select [0, !GetAZs '']
+      CidrBlock: !Select [100, !Cidr [!Ref VpcCidr, 256, 8]]
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-endpoints-a'
+        - Key: Tier
+          Value: endpoints
+
+  EndpointSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      AvailabilityZone: !Select [1, !GetAZs '']
+      CidrBlock: !Select [101, !Cidr [!Ref VpcCidr, 256, 8]]
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-endpoints-b'
+        - Key: Tier
+          Value: endpoints
+
+  EndpointSubnetC:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      AvailabilityZone: !Select [2, !GetAZs '']
+      CidrBlock: !Select [102, !Cidr [!Ref VpcCidr, 256, 8]]
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-endpoints-c'
+        - Key: Tier
+          Value: endpoints
+
+  # --- Routing ---------------------------------------------------------------
+  # One route table per AZ for the app tier so a per-AZ NAT gateway can be added
+  # later without re-associating subnets. The data and endpoint tiers share a
+  # single table that is intended to stay egress-free.
+
+  AppRouteTableA:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-app-a'
+
+  AppRouteTableB:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-app-b'
+
+  AppRouteTableC:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-app-c'
+
+  IsolatedRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-isolated'
+
+  AppSubnetARouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref AppSubnetA
+      RouteTableId: !Ref AppRouteTableA
+
+  AppSubnetBRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref AppSubnetB
+      RouteTableId: !Ref AppRouteTableB
+
+  AppSubnetCRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref AppSubnetC
+      RouteTableId: !Ref AppRouteTableC
+
+  DataSubnetARouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref DataSubnetA
+      RouteTableId: !Ref IsolatedRouteTable
+
+  DataSubnetBRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref DataSubnetB
+      RouteTableId: !Ref IsolatedRouteTable
+
+  DataSubnetCRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref DataSubnetC
+      RouteTableId: !Ref IsolatedRouteTable
+
+  EndpointSubnetARouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref EndpointSubnetA
+      RouteTableId: !Ref IsolatedRouteTable
+
+  EndpointSubnetBRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref EndpointSubnetB
+      RouteTableId: !Ref IsolatedRouteTable
+
+  EndpointSubnetCRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref EndpointSubnetC
+      RouteTableId: !Ref IsolatedRouteTable
+
+  # --- Flow logs -------------------------------------------------------------
+
+  FlowLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      LogGroupName: !Sub '/aws/vpc/${ProjectName}-${Environment}/flowlogs'
+      RetentionInDays: !Ref FlowLogRetentionInDays
+
+  FlowLogRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: vpc-flow-logs.amazonaws.com
+            Action: 'sts:AssumeRole'
+            Condition:
+              StringEquals:
+                'aws:SourceAccount': !Ref 'AWS::AccountId'
+              ArnLike:
+                'aws:SourceArn': !Sub 'arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:vpc-flow-log/*'
+      Policies:
+        - PolicyName: write-flow-logs
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'logs:CreateLogStream'
+                  - 'logs:PutLogEvents'
+                  - 'logs:DescribeLogStreams'
+                Resource: !GetAtt FlowLogGroup.Arn
+
+  FlowLog:
+    Type: AWS::EC2::FlowLog
+    Properties:
+      ResourceId: !Ref Vpc
+      ResourceType: VPC
+      TrafficType: ALL
+      LogDestinationType: cloud-watch-logs
+      LogGroupName: !Ref FlowLogGroup
+      DeliverLogsPermissionArn: !GetAtt FlowLogRole.Arn
+      MaxAggregationInterval: 600
+
+Outputs:
+  VpcId:
+    Value: !Ref Vpc
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-VpcId'
+
+  VpcCidr:
+    Value: !GetAtt Vpc.CidrBlock
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-VpcCidr'
+
+  AppSubnetIds:
+    Value: !Join [',', [!Ref AppSubnetA, !Ref AppSubnetB, !Ref AppSubnetC]]
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-AppSubnetIds'
+
+  DataSubnetIds:
+    Value: !Join [',', [!Ref DataSubnetA, !Ref DataSubnetB, !Ref DataSubnetC]]
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-DataSubnetIds'
+
+  EndpointSubnetIds:
+    Value: !Join [',', [!Ref EndpointSubnetA, !Ref EndpointSubnetB, !Ref EndpointSubnetC]]
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-EndpointSubnetIds'
+
+  RouteTableIds:
+    Value: !Join
+      - ','
+      - - !Ref AppRouteTableA
+        - !Ref AppRouteTableB
+        - !Ref AppRouteTableC
+        - !Ref IsolatedRouteTable
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-RouteTableIds'
+
+  AppRouteTableAId:
+    Value: !Ref AppRouteTableA
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-AppRouteTableAId'
+
+  AppRouteTableBId:
+    Value: !Ref AppRouteTableB
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-AppRouteTableBId'
+
+  AppRouteTableCId:
+    Value: !Ref AppRouteTableC
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-AppRouteTableCId'

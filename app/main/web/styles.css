@@ -1,0 +1,233 @@
+:root {
+  --bg: #0f172a;
+  --bg-accent: #1e293b;
+  --card: rgba(255, 255, 255, 0.06);
+  --card-border: rgba(255, 255, 255, 0.12);
+  --text: #f1f5f9;
+  --text-muted: #94a3b8;
+  --accent: #38bdf8;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background: radial-gradient(circle at 20% 0%, var(--bg-accent), var(--bg) 60%);
+  color: var(--text);
+  font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+}
+
+.page {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 3rem 1.5rem 4rem;
+}
+
+.page-header {
+  margin-bottom: 2.5rem;
+  text-align: center;
+}
+
+h1 {
+  margin: 0;
+  font-size: clamp(1.9rem, 4vw, 2.6rem);
+  letter-spacing: -0.02em;
+}
+
+.subtitle {
+  margin: 0.5rem 0 0;
+  color: var(--text-muted);
+}
+
+.city-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  max-width: 320px;
+  margin: 0 auto 2rem;
+}
+
+.city-picker-label {
+  font-size: 0.85rem;
+  color: var(--text-muted);
+}
+
+#city-select {
+  padding: 0.65rem 0.85rem;
+  border: 1px solid var(--card-border);
+  border-radius: 10px;
+  background: var(--card);
+  color: var(--text);
+  font: inherit;
+}
+
+#city-select:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.status {
+  margin-bottom: 1.5rem;
+  text-align: center;
+  color: var(--text-muted);
+}
+
+.status[hidden] {
+  display: none;
+}
+
+.status.error {
+  color: #fca5a5;
+}
+
+.cards {
+  display: flex;
+  justify-content: center;
+  max-width: 420px;
+  margin: 0 auto;
+}
+
+.card {
+  padding: 1.5rem;
+  border: 1px solid var(--card-border);
+  border-radius: 16px;
+  background: var(--card);
+  backdrop-filter: blur(6px);
+}
+
+.card-top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.card-city {
+  margin: 0;
+  font-size: 1.25rem;
+}
+
+.card-country,
+.card-time {
+  margin: 0.15rem 0 0;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+}
+
+.card-icon {
+  flex-shrink: 0;
+  color: var(--accent);
+}
+
+.card-temp {
+  margin: 1.25rem 0 0.25rem;
+  font-size: 2.75rem;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.card-condition {
+  margin: 0;
+  color: var(--text-muted);
+}
+
+.card-stats {
+  display: flex;
+  gap: 1.5rem;
+  margin: 1.25rem 0 0;
+  padding-top: 1rem;
+  border-top: 1px solid var(--card-border);
+}
+
+.card-stats div {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+.card-stats dt {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+}
+
+.card-stats dd {
+  margin: 0;
+  font-size: 0.95rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.page-footer {
+  margin-top: 2.5rem;
+  text-align: center;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+
+.toasts {
+  position: fixed;
+  right: 1.25rem;
+  bottom: 1.25rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  z-index: 1000;
+}
+
+.toast {
+  min-width: 260px;
+  max-width: 380px;
+  padding: 0.85rem 1rem;
+  border: 1px solid var(--card-border);
+  border-left-width: 4px;
+  border-radius: 10px;
+  background: #1e293b;
+  color: var(--text);
+  font-size: 0.9rem;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+  /* Toasts start offscreen and slide in once the class is added. */
+  opacity: 0;
+  transform: translateY(12px);
+  transition: opacity 0.2s ease, transform 0.2s ease;
+}
+
+.toast.visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.toast-success {
+  border-left-color: #34d399;
+}
+
+.toast-error {
+  border-left-color: #f87171;
+}
+
+/* Stays on screen for the length of the request, so the pulse doubles as a
+   "still waiting" indicator. */
+.toast-pending {
+  border-left-color: #60a5fa;
+  animation: toast-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes toast-pulse {
+  50% {
+    border-left-color: #1e40af;
+  }
+}
+
+.toast-title {
+  display: block;
+  margin-bottom: 0.15rem;
+  font-weight: 600;
+}
+
+.toast-detail {
+  color: var(--text-muted);
+  font-size: 0.8rem;
+}

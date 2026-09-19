@@ -1,0 +1,339 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  Private EKS cluster (no public API endpoint) with a managed node group and an
+  IAM user EKS-User granted cluster-admin via EKS access entries.
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: aws-project
+    AllowedPattern: '^[a-z0-9][a-z0-9-]{1,30}[a-z0-9]$'
+
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues: [dev, staging, prod]
+
+  KubernetesVersion:
+    Type: String
+    Default: '1.36'
+    Description: >-
+      EKS control plane version. Run `aws eks describe-addon-versions` or check
+      the EKS console for supported versions in your region before changing.
+
+  NodeInstanceType:
+    Type: String
+    Default: t3.small
+    Description: >-
+      Accounts on the AWS Free Tier plan can only launch free-tier-eligible
+      types (t3.micro, t3.small, t4g.micro, t4g.small, c7i-flex.large,
+      m7i-flex.large in eu-west-1). t3.small allows 11 pods per node; t3.micro
+      allows only 4. Use m7i-flex.large or t3.medium once the account is on a
+      paid plan.
+
+  NodeDesiredCapacity:
+    Type: Number
+    Default: 2
+    MinValue: 1
+
+  NodeMinSize:
+    Type: Number
+    Default: 1
+    MinValue: 1
+
+  NodeMaxSize:
+    Type: Number
+    Default: 4
+    MinValue: 1
+
+  NodeGroupRevision:
+    Type: String
+    Default: v2
+    AllowedPattern: '^v[0-9]+$'
+    Description: >-
+      Suffix on the node group name. EKS rejects some changes to an existing
+      node group — attaching a launch template is one — so bumping this
+      replaces the group instead. CloudFormation brings the new one up before
+      deleting the old, which drains the pods onto the new nodes.
+
+Resources:
+  ClusterRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectName}-${Environment}-eks-cluster'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: eks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonEKSClusterPolicy
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-eks-cluster'
+
+  ClusterSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !Sub 'EKS control plane for ${ProjectName}-${Environment}'
+      VpcId: !ImportValue
+        'Fn::Sub': '${ProjectName}-${Environment}-VpcId'
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: !ImportValue
+            'Fn::Sub': '${ProjectName}-${Environment}-VpcCidr'
+          Description: Kubernetes API from within the VPC
+      SecurityGroupEgress:
+        - IpProtocol: '-1'
+          CidrIp: 0.0.0.0/0
+          Description: All outbound traffic
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-eks-cluster'
+
+  EksCluster:
+    Type: AWS::EKS::Cluster
+    Properties:
+      Name: !Sub '${ProjectName}-${Environment}'
+      Version: !Ref KubernetesVersion
+      RoleArn: !GetAtt ClusterRole.Arn
+      AccessConfig:
+        AuthenticationMode: API
+        BootstrapClusterCreatorAdminPermissions: true
+      ResourcesVpcConfig:
+        SubnetIds: !Split
+          - ','
+          - !ImportValue
+            'Fn::Sub': '${ProjectName}-${Environment}-AppSubnetIds'
+        SecurityGroupIds:
+          - !Ref ClusterSecurityGroup
+        EndpointPublicAccess: false
+        EndpointPrivateAccess: true
+      Logging:
+        ClusterLogging:
+          EnabledTypes:
+            - Type: api
+            - Type: audit
+            - Type: authenticator
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}'
+
+  NodeRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectName}-${Environment}-eks-node'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy
+        - arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy
+        - arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-eks-node'
+
+  # AWS::EKS::Nodegroup tags land on the node group itself and are never copied
+  # to the instances, so naming the VMs takes a launch template.
+  NodeLaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateName: !Sub '${ProjectName}-${Environment}-eks-nodes'
+      LaunchTemplateData:
+        # Deliberately no ImageId, InstanceType or UserData: EKS supplies the
+        # AMI that AmiType selects plus its bootstrap script, and the instance
+        # type comes from the node group. Setting them here would conflict.
+        MetadataOptions:
+          HttpEndpoint: enabled
+          HttpTokens: required
+          # Matches what EKS configures by default. A hop limit of 1 keeps pods
+          # off IMDS; the kubelet and VPC CNI run on the host, so they still
+          # reach it. Raise to 2 if a pod ever needs the node's credentials.
+          HttpPutResponseHopLimit: 1
+        BlockDeviceMappings:
+          - DeviceName: /dev/xvda
+            Ebs:
+              VolumeSize: 20
+              VolumeType: gp3
+              Encrypted: true
+              DeleteOnTermination: true
+        TagSpecifications:
+          - ResourceType: instance
+            Tags:
+              - Key: Name
+                Value: !Sub '${ProjectName}-${Environment}-eks-node'
+              - Key: Project
+                Value: !Ref ProjectName
+              - Key: Environment
+                Value: !Ref Environment
+          - ResourceType: volume
+            Tags:
+              - Key: Name
+                Value: !Sub '${ProjectName}-${Environment}-eks-node'
+              - Key: Project
+                Value: !Ref ProjectName
+              - Key: Environment
+                Value: !Ref Environment
+
+  NodeGroup:
+    Type: AWS::EKS::Nodegroup
+    Properties:
+      ClusterName: !Ref EksCluster
+      NodegroupName: !Sub '${ProjectName}-${Environment}-nodes-${NodeGroupRevision}'
+      NodeRole: !GetAtt NodeRole.Arn
+      Subnets: !Split
+        - ','
+        - !ImportValue
+          'Fn::Sub': '${ProjectName}-${Environment}-AppSubnetIds'
+      InstanceTypes:
+        - !Ref NodeInstanceType
+      AmiType: AL2023_x86_64_STANDARD
+      LaunchTemplate:
+        Id: !Ref NodeLaunchTemplate
+        Version: !GetAtt NodeLaunchTemplate.LatestVersionNumber
+      ScalingConfig:
+        DesiredSize: !Ref NodeDesiredCapacity
+        MinSize: !Ref NodeMinSize
+        MaxSize: !Ref NodeMaxSize
+      Tags:
+        Name: !Sub '${ProjectName}-${Environment}-nodes'
+        Project: !Ref ProjectName
+        Environment: !Ref Environment
+
+  EksUser:
+    Type: AWS::IAM::User
+    Properties:
+      UserName: EKS-User
+      Tags:
+        - Key: Name
+          Value: EKS-User
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+
+  EksUserAwsAccessPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: !Sub '${ProjectName}-${Environment}-eks-user-aws-access'
+      Users:
+        - !Ref EksUser
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: EksDescribe
+            Effect: Allow
+            Action:
+              - eks:DescribeCluster
+              - eks:ListClusters
+            Resource: '*'
+          - Sid: EcrPull
+            Effect: Allow
+            Action:
+              - ecr:GetAuthorizationToken
+            Resource: '*'
+          - Sid: EcrRead
+            Effect: Allow
+            Action:
+              - ecr:BatchCheckLayerAvailability
+              - ecr:GetDownloadUrlForLayer
+              - ecr:BatchGetImage
+              - ecr:DescribeRepositories
+              - ecr:ListImages
+            Resource: !Sub 'arn:${AWS::Partition}:ecr:${AWS::Region}:${AWS::AccountId}:repository/${ProjectName}-${Environment}/*'
+          - Sid: S3ProjectBuckets
+            Effect: Allow
+            Action:
+              - s3:GetObject
+              - s3:PutObject
+              - s3:DeleteObject
+              - s3:ListBucket
+            Resource:
+              - !Sub 'arn:${AWS::Partition}:s3:::${ProjectName}-${Environment}-*'
+              - !Sub 'arn:${AWS::Partition}:s3:::${ProjectName}-${Environment}-*/*'
+          - Sid: SecretsManagerRead
+            Effect: Allow
+            Action:
+              - secretsmanager:GetSecretValue
+              - secretsmanager:DescribeSecret
+            Resource: !Sub 'arn:${AWS::Partition}:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${ProjectName}/${Environment}/*'
+          - Sid: DynamoDbProjectTables
+            Effect: Allow
+            Action:
+              - dynamodb:GetItem
+              - dynamodb:PutItem
+              - dynamodb:UpdateItem
+              - dynamodb:DeleteItem
+              - dynamodb:Query
+              - dynamodb:Scan
+              - dynamodb:BatchGetItem
+              - dynamodb:BatchWriteItem
+              - dynamodb:DescribeTable
+            Resource: !Sub 'arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${ProjectName}-${Environment}-*'
+          - Sid: CloudWatchLogsWrite
+            Effect: Allow
+            Action:
+              - logs:CreateLogGroup
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+              - logs:DescribeLogStreams
+            Resource: !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/eks/${ProjectName}-${Environment}*'
+
+  EksUserAccessEntry:
+    Type: AWS::EKS::AccessEntry
+    Properties:
+      ClusterName: !Ref EksCluster
+      PrincipalArn: !GetAtt EksUser.Arn
+      Type: STANDARD
+      Username: eks-user
+      AccessPolicies:
+        - AccessScope:
+            Type: cluster
+          PolicyArn: arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy
+
+Outputs:
+  ClusterName:
+    Value: !Ref EksCluster
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-EksClusterName'
+
+  ClusterArn:
+    Value: !GetAtt EksCluster.Arn
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-EksClusterArn'
+
+  ClusterEndpoint:
+    Value: !GetAtt EksCluster.Endpoint
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-EksClusterEndpoint'
+
+  ClusterSecurityGroupId:
+    Value: !Ref ClusterSecurityGroup
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-EksClusterSecurityGroupId'
+
+  # EKS creates this one itself and attaches it to the managed node group
+  # instances, so NodePort rules belong here rather than on ClusterSecurityGroup.
+  NodeSecurityGroupId:
+    Value: !GetAtt EksCluster.ClusterSecurityGroupId
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-EksNodeSecurityGroupId'
+
+  EksUserArn:
+    Value: !GetAtt EksUser.Arn
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-EksUserArn'
+
+  KubeconfigHint:
+    Value: !Sub >-
+      Create access keys for EKS-User, then from inside the VPC run:
+      aws eks update-kubeconfig --name ${EksCluster} --region ${AWS::Region}

@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Weather Board</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="page">
+      <header class="page-header">
+        <h1>Weather Board Main</h1>
+        <p class="subtitle">Select a city to view its current conditions</p>
+      </header>
+
+      <label class="city-picker" for="city-select">
+        <span class="city-picker-label">City</span>
+        <select id="city-select" disabled aria-label="Select city">
+          <option value="">Loading cities&hellip;</option>
+        </select>
+      </label>
+
+      <div id="status" class="status" role="status">Loading forecast&hellip;</div>
+
+      <section id="cards" class="cards" aria-label="City forecasts"></section>
+
+      <footer class="page-footer">
+        <span id="source-note"></span>
+      </footer>
+    </main>
+
+    <div id="toasts" class="toasts" aria-live="polite" aria-atomic="false"></div>
+
+    <script src="/app.js"></script>
+  </body>
+</html>

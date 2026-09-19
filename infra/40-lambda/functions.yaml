@@ -1,0 +1,288 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  Two VPC-attached Lambda functions: one behind a private API Gateway REST API
+  (HTTP, reachable only via the execute-api VPC endpoint) and one triggered by
+  SQS. No public URLs or Function URLs.
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: aws-project
+    AllowedPattern: '^[a-z0-9][a-z0-9-]{1,30}[a-z0-9]$'
+
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues: [dev, staging, prod]
+
+  LambdaRuntime:
+    Type: String
+    Default: python3.13
+    AllowedValues: [python3.12, python3.13]
+
+  LambdaTimeout:
+    Type: Number
+    Default: 30
+    MinValue: 1
+    MaxValue: 900
+
+  SqsVisibilityTimeout:
+    Type: Number
+    Default: 180
+    Description: Must be greater than or equal to LambdaTimeout.
+
+Resources:
+  LambdaSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !Sub 'Lambda ENIs for ${ProjectName}-${Environment}'
+      VpcId: !ImportValue
+        'Fn::Sub': '${ProjectName}-${Environment}-VpcId'
+      SecurityGroupEgress:
+        - IpProtocol: '-1'
+          CidrIp: 0.0.0.0/0
+          Description: All outbound traffic
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-lambda'
+
+  HttpLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectName}-${Environment}-http-lambda'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+
+  SqsLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectName}-${Environment}-sqs-lambda'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+      Policies:
+        - PolicyName: sqs-consume
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - sqs:ReceiveMessage
+                  - sqs:DeleteMessage
+                  - sqs:GetQueueAttributes
+                  - sqs:ChangeMessageVisibility
+                Resource: !GetAtt WorkQueue.Arn
+
+  HttpLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${ProjectName}-${Environment}-http'
+      Description: Invoked by the private REST API (internal HTTP only).
+      Runtime: !Ref LambdaRuntime
+      Handler: index.handler
+      Role: !GetAtt HttpLambdaRole.Arn
+      Timeout: !Ref LambdaTimeout
+      MemorySize: 128
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref LambdaSecurityGroup
+        SubnetIds: !Split
+          - ','
+          - !ImportValue
+            'Fn::Sub': '${ProjectName}-${Environment}-AppSubnetIds'
+      Code:
+        ZipFile: |
+          import json
+
+          def handler(event, context):
+              return {
+                  'statusCode': 200,
+                  'headers': {'Content-Type': 'application/json'},
+                  'body': json.dumps({
+                      'message': 'hello from http lambda',
+                      'path': event.get('path'),
+                  }),
+              }
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-http'
+
+  SqsLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${ProjectName}-${Environment}-sqs'
+      Description: Triggered by messages on the internal SQS queue.
+      Runtime: !Ref LambdaRuntime
+      Handler: index.handler
+      Role: !GetAtt SqsLambdaRole.Arn
+      Timeout: !Ref LambdaTimeout
+      MemorySize: 128
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref LambdaSecurityGroup
+        SubnetIds: !Split
+          - ','
+          - !ImportValue
+            'Fn::Sub': '${ProjectName}-${Environment}-AppSubnetIds'
+      Code:
+        ZipFile: |
+          def handler(event, context):
+              for record in event.get('Records', []):
+                  print(f"Processing message: {record.get('messageId')} body={record.get('body')}")
+              return {'batchItemFailures': []}
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-sqs'
+
+  DeadLetterQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub '${ProjectName}-${Environment}-lambda-dlq'
+      MessageRetentionPeriod: 1209600
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-lambda-dlq'
+
+  WorkQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub '${ProjectName}-${Environment}-lambda-work'
+      VisibilityTimeout: !Ref SqsVisibilityTimeout
+      MessageRetentionPeriod: 345600
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt DeadLetterQueue.Arn
+        maxReceiveCount: 3
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-lambda-work'
+
+  SqsEventSourceMapping:
+    Type: AWS::Lambda::EventSourceMapping
+    Properties:
+      BatchSize: 10
+      Enabled: true
+      EventSourceArn: !GetAtt WorkQueue.Arn
+      FunctionName: !Ref SqsLambda
+
+  PrivateApi:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: !Sub '${ProjectName}-${Environment}-internal-api'
+      Description: Private REST API — reachable only through the execute-api VPC endpoint.
+      EndpointConfiguration:
+        Types:
+          - PRIVATE
+        VpcEndpointIds:
+          - !ImportValue
+            'Fn::Sub': '${ProjectName}-${Environment}-ExecuteApiEndpointId'
+      # Relative ARN form ("execute-api:/*") keeps the policy from referencing the
+      # API's own id, which would be a circular dependency.
+      Policy:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: '*'
+            Action: execute-api:Invoke
+            Resource: 'execute-api:/*'
+            Condition:
+              StringEquals:
+                aws:SourceVpce: !ImportValue
+                  'Fn::Sub': '${ProjectName}-${Environment}-ExecuteApiEndpointId'
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-internal-api'
+
+  ApiResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref PrivateApi
+      ParentId: !GetAtt PrivateApi.RootResourceId
+      PathPart: hello
+
+  ApiMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref PrivateApi
+      ResourceId: !Ref ApiResource
+      HttpMethod: GET
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${HttpLambda.Arn}/invocations'
+
+  HttpLambdaInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref HttpLambda
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${PrivateApi}/*/*/*'
+
+  ApiDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn: ApiMethod
+    Properties:
+      RestApiId: !Ref PrivateApi
+
+  ApiStage:
+    Type: AWS::ApiGateway::Stage
+    Properties:
+      RestApiId: !Ref PrivateApi
+      DeploymentId: !Ref ApiDeployment
+      StageName: v1
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-internal-api-v1'
+
+Outputs:
+  HttpLambdaArn:
+    Value: !GetAtt HttpLambda.Arn
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-HttpLambdaArn'
+
+  SqsLambdaArn:
+    Value: !GetAtt SqsLambda.Arn
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-SqsLambdaArn'
+
+  WorkQueueUrl:
+    Value: !Ref WorkQueue
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-WorkQueueUrl'
+
+  WorkQueueArn:
+    Value: !GetAtt WorkQueue.Arn
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-WorkQueueArn'
+
+  PrivateApiId:
+    Value: !Ref PrivateApi
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-PrivateApiId'
+
+  PrivateApiInvokeUrl:
+    Description: >-
+      Call from inside the VPC via the execute-api endpoint DNS name.
+    Value: !Sub
+      - 'https://${ApiId}-${VpceId}.execute-api.${AWS::Region}.amazonaws.com/v1/hello'
+      - ApiId: !Ref PrivateApi
+        VpceId: !ImportValue
+          'Fn::Sub': '${ProjectName}-${Environment}-ExecuteApiEndpointId'
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-PrivateApiInvokeUrl'
