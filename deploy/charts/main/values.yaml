@@ -14,12 +14,11 @@ serviceAccount:
   roleArn: arn:aws:iam::034971967415:role/aws-project-dev-main-app
 
 service:
-  # NodePort stays so "make app-forward" still works through the bastion.
-  # Public access is Gateway API (see gateway.) not Service type=LoadBalancer.
-  type: NodePort
+  # ClusterIP: the Gateway ALB reaches pod IPs (targetType: ip). Bastion access
+  # uses kubectl port-forward ("make app-forward"), not a node port.
+  type: ClusterIP
   port: 80
   targetPort: 8080
-  nodePort: 30080
 
 gateway:
   # Resources are rendered only when sourceRange is set ("make alb").

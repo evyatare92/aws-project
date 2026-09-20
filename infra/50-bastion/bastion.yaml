@@ -32,15 +32,6 @@ Parameters:
       Create an EKS access entry for the bastion role so kubectl works. Requires
       the EKS stack to be deployed first. Set to no if it is not.
 
-  AppNodePort:
-    Type: Number
-    Default: 30080
-    MinValue: 30000
-    MaxValue: 32767
-    Description: >-
-      NodePort the web app Service listens on. The bastion connects here and
-      SSM forwards it to your PC, so it must match service.nodePort in the chart.
-
 Conditions:
   WithEksAccess: !Equals [!Ref GrantEksClusterAdmin, 'yes']
 
@@ -194,20 +185,6 @@ Resources:
       ToPort: 443
       SourceSecurityGroupId: !Ref BastionSecurityGroup
       Description: Kubernetes API from the bastion
-
-  # Lets "make app-forward" tunnel from your PC to the app: SSM connects the
-  # bastion to a node on the Service's NodePort.
-  AppNodePortFromBastion:
-    Type: AWS::EC2::SecurityGroupIngress
-    Condition: WithEksAccess
-    Properties:
-      GroupId: !ImportValue
-        'Fn::Sub': '${ProjectName}-${Environment}-EksNodeSecurityGroupId'
-      IpProtocol: tcp
-      FromPort: !Ref AppNodePort
-      ToPort: !Ref AppNodePort
-      SourceSecurityGroupId: !Ref BastionSecurityGroup
-      Description: Web app NodePort from the bastion
 
 Outputs:
   BastionInstanceId:

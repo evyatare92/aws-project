@@ -26,8 +26,6 @@ MAIN_VALUES := $(CHART_DIR)/main/values.yaml
 # Helm release for the main app, and the namespace it lives in.
 RELEASE    ?= weather-main
 NAMESPACE  ?= weather
-# Must match service.nodePort in the chart and AppNodePort in the bastion stack.
-NODE_PORT  ?= 30080
 LOCAL_PORT ?= 8080
 # Public Gateway ALB source. Empty means "detect this machine's public IP".
 CLIENT_CIDR ?=
@@ -295,20 +293,46 @@ app-helm:
 	fi; \
 	echo "Deployed $(RELEASE) to namespace $(NAMESPACE)"
 
-NODE_IP = $(shell aws ec2 describe-instances --region $(AWS_REGION) \
-	--filters 'Name=tag:eks:cluster-name,Values=$(STACK_PREFIX)' \
-		'Name=instance-state-name,Values=running' \
-	--query 'Reservations[0].Instances[0].PrivateIpAddress' --output text 2>/dev/null)
-
-# Opens http://localhost:$(LOCAL_PORT) on your PC by tunnelling through the
-# bastion to a node's NodePort. Runs in the foreground; Ctrl-C to stop.
+# Opens http://localhost:$(LOCAL_PORT) on your PC: starts kubectl port-forward
+# on the bastion (ClusterIP), then SSM forwards to that listener. Ctrl-C stops
+# the tunnel; the bastion port-forward may keep running until the next app-forward.
 app-forward:
 	@test -n "$(BASTION_ID)" || (echo "No bastion found. Run 'make bastion'." && exit 1)
-	@test "$(NODE_IP)" != "None" -a -n "$(NODE_IP)" || (echo "No running EKS nodes found." && exit 1)
-	@echo "Forwarding localhost:$(LOCAL_PORT) -> $(NODE_IP):$(NODE_PORT) via $(BASTION_ID)"
+	@aws s3 cp deploy/charts/bastion-port-forward.sh \
+		s3://$(ARTIFACTS_BUCKET)/charts/bastion-port-forward.sh --region $(AWS_REGION) >/dev/null
+	@cid=$$(aws ssm send-command --region $(AWS_REGION) \
+		--instance-ids $(BASTION_ID) \
+		--document-name AWS-RunShellScript \
+		--timeout-seconds 120 \
+		--comment "kubectl port-forward $(RELEASE)" \
+		--parameters 'commands=["aws s3 cp s3://$(ARTIFACTS_BUCKET)/charts/bastion-port-forward.sh /tmp/bastion-port-forward.sh --region $(AWS_REGION)","CLUSTER=$(STACK_PREFIX) REGION=$(AWS_REGION) RELEASE=$(RELEASE) NAMESPACE=$(NAMESPACE) PF_PORT=$(LOCAL_PORT) bash /tmp/bastion-port-forward.sh"]' \
+		--query Command.CommandId --output text) && \
+	test -n "$$cid" || { echo "send-command returned no command id" >&2; exit 1; }; \
+	echo "SSM command $$cid (port-forward on bastion)"; \
+	for _ in $$(seq 1 24); do \
+		st=$$(aws ssm get-command-invocation --region $(AWS_REGION) \
+			--command-id $$cid --instance-id $(BASTION_ID) \
+			--query Status --output text 2>/dev/null) || st=Pending; \
+		case "$$st" in Success|Failed|Cancelled|TimedOut) break ;; esac; \
+		sleep 2; \
+	done; \
+	aws ssm get-command-invocation --region $(AWS_REGION) \
+		--command-id $$cid --instance-id $(BASTION_ID) \
+		--query StandardOutputContent --output text; \
+	st=$$(aws ssm get-command-invocation --region $(AWS_REGION) \
+		--command-id $$cid --instance-id $(BASTION_ID) \
+		--query Status --output text); \
+	if [ "$$st" != "Success" ]; then \
+		aws ssm get-command-invocation --region $(AWS_REGION) \
+			--command-id $$cid --instance-id $(BASTION_ID) \
+			--query StandardErrorContent --output text >&2; \
+		echo "Port-forward setup finished with status: $$st" >&2; \
+		exit 1; \
+	fi; \
+	echo "Forwarding localhost:$(LOCAL_PORT) -> bastion:127.0.0.1:$(LOCAL_PORT) via $(BASTION_ID)"; \
 	aws ssm start-session --region $(AWS_REGION) --target $(BASTION_ID) \
 		--document-name AWS-StartPortForwardingSessionToRemoteHost \
-		--parameters host="$(NODE_IP)",portNumber="$(NODE_PORT)",localPortNumber="$(LOCAL_PORT)"
+		--parameters host="127.0.0.1",portNumber="$(LOCAL_PORT)",localPortNumber="$(LOCAL_PORT)"
 
 # Internet-facing ALB via Gateway API + AWS Load Balancer Controller, locked
 # to CLIENT_CIDR (defaults to this PC). Not part of "make all".
