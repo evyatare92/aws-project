@@ -31,6 +31,10 @@ spec:
             - name: WEATHER_SERVICE_URL
               value: {{ . | quote }}
             {{- end }}
+            {{- with .Values.agent.serviceUrl }}
+            - name: AGENT_SERVICE_URL
+              value: {{ . | quote }}
+            {{- end }}
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
           livenessProbe:

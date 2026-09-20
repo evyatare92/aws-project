@@ -134,6 +134,13 @@ h1 {
   color: var(--text-muted);
 }
 
+.card-summary {
+  margin: 0.75rem 0 0;
+  font-size: 0.9rem;
+  line-height: 1.4;
+  color: var(--text);
+}
+
 .card-stats {
   display: flex;
   gap: 1.5rem;

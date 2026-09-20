@@ -1,8 +1,8 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Description: >-
-  Two VPC-attached Lambda functions: one behind a private API Gateway REST API
-  (HTTP, reachable only via the execute-api VPC endpoint) and one triggered by
-  SQS. No public URLs or Function URLs.
+  VPC-attached Lambda functions behind a private API Gateway REST API (HTTP,
+  reachable only via the execute-api VPC endpoint) plus an SQS-triggered
+  worker. Includes a Claude Sonnet 4.5 weather agent. No public URLs.
 
 Parameters:
   ProjectName:
@@ -31,6 +31,28 @@ Parameters:
     Default: 180
     Description: Must be greater than or equal to LambdaTimeout.
 
+  AnthropicApiKey:
+    Type: String
+    NoEcho: true
+    Default: ''
+    Description: >-
+      Anthropic API key. Stored in Secrets Manager and injected as the Lambda
+      environment variable ANTHROPIC_API_KEY. Leave blank on later updates to
+      keep the existing secret.
+
+  AgentCodeS3Key:
+    Type: String
+    Default: lambda/agent/handler.zip
+
+  AgentCodeS3ObjectVersion:
+    Type: String
+    Default: ''
+    Description: S3 object version of the agent zip. Makefile always passes this.
+
+Conditions:
+  SetAnthropicApiKey: !Not [!Equals [!Ref AnthropicApiKey, '']]
+  HasAgentCodeVersion: !Not [!Equals [!Ref AgentCodeS3ObjectVersion, '']]
+
 Resources:
   LambdaSecurityGroup:
     Type: AWS::EC2::SecurityGroup
@@ -45,6 +67,50 @@ Resources:
       Tags:
         - Key: Name
           Value: !Sub '${ProjectName}-${Environment}-lambda'
+
+  AgentLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectName}-${Environment}-agent-lambda'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+      Policies:
+        - PolicyName: read-anthropic-secret
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                  - secretsmanager:DescribeSecret
+                Resource: !Ref AnthropicSecret
+
+  AnthropicSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub '${ProjectName}/${Environment}/anthropic'
+      Description: Anthropic API key for the weather agent Lambda
+      SecretString: !If
+        - SetAnthropicApiKey
+        - !Sub '{"api_key":"${AnthropicApiKey}"}'
+        - !Ref AWS::NoValue
+      GenerateSecretString: !If
+        - SetAnthropicApiKey
+        - !Ref AWS::NoValue
+        - SecretStringTemplate: '{"api_key":""}'
+          GenerateStringKey: placeholder
+          PasswordLength: 16
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}/${Environment}/anthropic'
 
   HttpLambdaRole:
     Type: AWS::IAM::Role
@@ -121,6 +187,51 @@ Resources:
       Tags:
         - Key: Name
           Value: !Sub '${ProjectName}-${Environment}-http'
+
+  AgentLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${ProjectName}-${Environment}-agent'
+      Description: Claude Sonnet 4.5 weather agent, invoked by the private REST API.
+      Runtime: !Ref LambdaRuntime
+      Handler: !If
+        - HasAgentCodeVersion
+        - handler.handler
+        - index.handler
+      Role: !GetAtt AgentLambdaRole.Arn
+      Timeout: 29
+      MemorySize: 512
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref LambdaSecurityGroup
+        SubnetIds: !Split
+          - ','
+          - !ImportValue
+            'Fn::Sub': '${ProjectName}-${Environment}-AppSubnetIds'
+      Environment:
+        Variables:
+          ANTHROPIC_API_KEY: !If
+            - SetAnthropicApiKey
+            - !Ref AnthropicApiKey
+            - !Sub '{{resolve:secretsmanager:${AnthropicSecret}:SecretString:api_key}}'
+          ANTHROPIC_SECRET_ARN: !Ref AnthropicSecret
+          ANTHROPIC_MODEL: claude-sonnet-4-5
+      Code: !If
+        - HasAgentCodeVersion
+        - S3Bucket: !ImportValue
+            'Fn::Sub': '${ProjectName}-${Environment}-ArtifactsBucket'
+          S3Key: !Ref AgentCodeS3Key
+          S3ObjectVersion: !Ref AgentCodeS3ObjectVersion
+        - ZipFile: |
+            def handler(event, context):
+                return {
+                    'statusCode': 503,
+                    'headers': {'Content-Type': 'application/json'},
+                    'body': '{"error":"agent bundle has not been uploaded yet"}',
+                }
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-agent'
 
   SqsLambda:
     Type: AWS::Lambda::Function
@@ -226,6 +337,33 @@ Resources:
         IntegrationHttpMethod: POST
         Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${HttpLambda.Arn}/invocations'
 
+  AgentApiResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref PrivateApi
+      ParentId: !GetAtt PrivateApi.RootResourceId
+      PathPart: weather
+
+  AgentCityResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref PrivateApi
+      ParentId: !Ref AgentApiResource
+      PathPart: '{city}'
+
+  AgentApiMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref PrivateApi
+      ResourceId: !Ref AgentCityResource
+      HttpMethod: GET
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        TimeoutInMillis: 29000
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${AgentLambda.Arn}/invocations'
+
   HttpLambdaInvokePermission:
     Type: AWS::Lambda::Permission
     Properties:
@@ -234,11 +372,22 @@ Resources:
       Principal: apigateway.amazonaws.com
       SourceArn: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${PrivateApi}/*/*/*'
 
+  AgentLambdaInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref AgentLambda
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${PrivateApi}/*/*/*'
+
   ApiDeployment:
     Type: AWS::ApiGateway::Deployment
-    DependsOn: ApiMethod
+    DependsOn:
+      - ApiMethod
+      - AgentApiMethod
     Properties:
       RestApiId: !Ref PrivateApi
+      Description: !Sub 'agent ${AgentCodeS3ObjectVersion}'
 
   ApiStage:
     Type: AWS::ApiGateway::Stage
@@ -255,6 +404,16 @@ Outputs:
     Value: !GetAtt HttpLambda.Arn
     Export:
       Name: !Sub '${ProjectName}-${Environment}-HttpLambdaArn'
+
+  AgentLambdaArn:
+    Value: !GetAtt AgentLambda.Arn
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-AgentLambdaArn'
+
+  AnthropicSecretArn:
+    Value: !Ref AnthropicSecret
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-AnthropicSecretArn'
 
   SqsLambdaArn:
     Value: !GetAtt SqsLambda.Arn
@@ -286,3 +445,11 @@ Outputs:
           'Fn::Sub': '${ProjectName}-${Environment}-ExecuteApiEndpointId'
     Export:
       Name: !Sub '${ProjectName}-${Environment}-PrivateApiInvokeUrl'
+
+  AgentApiUrl:
+    Description: >-
+      Private invoke URL for the weather agent. From inside the VPC this resolves
+      through the execute-api endpoint (PrivateDnsEnabled).
+    Value: !Sub 'https://${PrivateApi}.execute-api.${AWS::Region}.amazonaws.com/v1'
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-AgentApiUrl'

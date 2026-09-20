@@ -42,7 +42,7 @@ DEPLOY := aws cloudformation deploy --region $(AWS_REGION) \
 
 COMMON_PARAMS := ProjectName=$(PROJECT) Environment=$(ENV)
 
-.PHONY: all bootstrap registry network endpoints eks ecs lambda bastion bastion-tools connect lint outputs \
+.PHONY: all bootstrap registry network endpoints eks ecs lambda lambda-agent-package bastion bastion-tools connect lint outputs \
 	app-login app-build version-bump app-push app-publish app-image app-push-all \
 	charts-version charts-stage \
 	app-deploy app-forward \
@@ -91,10 +91,39 @@ ecs-weather:
 		--template-file $(INFRA)/31-ecs/weather-service.yaml \
 		--parameter-overrides $(COMMON_PARAMS) ImageTag=$(shell cat app/weather/.version)
 
-lambda:
+AGENT_DIR     := app/agent
+AGENT_S3_KEY  := lambda/agent/handler.zip
+ANTHROPIC_API_KEY ?=
+
+lambda-agent-package:
+	@test -f $(AGENT_DIR)/handler.py || { echo "Missing $(AGENT_DIR)/handler.py"; exit 1; }
+	@test -f $(AGENT_DIR)/requirements.txt || { echo "Missing $(AGENT_DIR)/requirements.txt"; exit 1; }
+	rm -rf .build/agent .build/handler.zip
+	mkdir -p .build/agent
+	python3 -m pip install -q -r $(AGENT_DIR)/requirements.txt -t .build/agent \
+		--python-version 3.13 --platform manylinux2014_x86_64 --implementation cp \
+		--only-binary=:all: --ignore-installed
+	cp $(AGENT_DIR)/handler.py .build/agent/handler.py
+	find .build/agent -type d -name '__pycache__' -prune -exec rm -rf {} +
+	cd .build/agent && zip -qr ../handler.zip . -x '*.pyc'
+	aws s3 cp .build/handler.zip s3://$(ARTIFACTS_BUCKET)/$(AGENT_S3_KEY) --region $(AWS_REGION)
+	rm -rf .build
+	@echo "Uploaded s3://$(ARTIFACTS_BUCKET)/$(AGENT_S3_KEY)"
+
+lambda: lambda-agent-package
+	@ver=$$(aws s3api head-object --region $(AWS_REGION) --bucket $(ARTIFACTS_BUCKET) \
+		--key $(AGENT_S3_KEY) --query VersionId --output text) && \
+	params="$(COMMON_PARAMS) AgentCodeS3Key=$(AGENT_S3_KEY) AgentCodeS3ObjectVersion=$$ver" && \
+	if [ -n "$(ANTHROPIC_API_KEY)" ]; then params="$$params AnthropicApiKey=$(ANTHROPIC_API_KEY)"; fi && \
 	$(DEPLOY) --stack-name $(STACK_PREFIX)-lambda \
 		--template-file $(INFRA)/40-lambda/functions.yaml \
-		--parameter-overrides $(COMMON_PARAMS)
+		--parameter-overrides $$params && \
+	api=$$(aws cloudformation describe-stacks --region $(AWS_REGION) \
+		--stack-name $(STACK_PREFIX)-lambda \
+		--query 'Stacks[0].Outputs[?OutputKey==`PrivateApiId`].OutputValue' --output text) && \
+	aws apigateway create-deployment --region $(AWS_REGION) --rest-api-id $$api \
+		--stage-name v1 --description "agent $$ver" >/dev/null && \
+	echo "Lambda agent deployed. Pass ANTHROPIC_API_KEY=... if the secret is still empty."
 
 # Deploy after eks, so the cluster exports the bastion's access entry needs exist.
 bastion:
@@ -161,6 +190,12 @@ charts-version:
 	sed -i -E "s/^appVersion:.*/appVersion: \"$$v\"/" $(MAIN_CHART) && \
 	sed -i -E "/^image:/,/^[[:space:]]*$$/ s/^  tag:.*/  tag: \"$$v\"/" $(MAIN_VALUES) && \
 	echo "chart version, appVersion and image tag set to $$v"
+	@url=$$(aws cloudformation list-exports --region $(AWS_REGION) \
+		--query "Exports[?Name=='$(STACK_PREFIX)-AgentApiUrl'].Value" --output text 2>/dev/null); \
+	if [ -n "$$url" ] && [ "$$url" != "None" ]; then \
+		sed -i -E "/^agent:/,/^[[:space:]]*$$/ s|^  serviceUrl:.*|  serviceUrl: $$url|" $(MAIN_VALUES); \
+		echo "$(MAIN_VALUES): agent.serviceUrl set to $$url"; \
+	fi
 
 # The bastion has no internet route, so charts travel via the artifacts bucket.
 charts-stage: charts-version

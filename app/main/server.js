@@ -5,8 +5,16 @@ import { fileURLToPath } from "node:url";
 
 const PORT = Number(process.env.PORT || 8080);
 // Cloud Map name of the ECS weather service, injected by the Helm chart.
-const WEATHER_SERVICE_URL = process.env.WEATHER_SERVICE_URL || "http://weather.aws-project-dev.local:8080";
+const WEATHER_SERVICE_URL = process.env.WEATHER_SERVICE_URL || "";
 const WEATHER_TIMEOUT_MS = Number(process.env.WEATHER_TIMEOUT_MS || 10000);
+// Private API Gateway invoke URL (no path), injected by the Helm chart.
+const AGENT_SERVICE_URL = process.env.AGENT_SERVICE_URL || "";
+const AGENT_TIMEOUT_MS = Number(process.env.AGENT_TIMEOUT_MS || 25000);
+
+const CITY_BACKENDS = {
+  "new-york": "ecs",
+  barcelona: "agent",
+};
 
 const WEB_ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "web");
 
@@ -55,28 +63,43 @@ async function serveStatic(res, pathname, { noStore = false } = {}) {
   res.end(body);
 }
 
-// The ECS service is only reachable from inside the VPC, so the call has to
-// happen here rather than in the browser.
-async function fetchLive(cityId) {
-  if (!WEATHER_SERVICE_URL) {
-    return { status: 503, body: { error: "WEATHER_SERVICE_URL is not configured" } };
-  }
-
+async function fetchJson(url, timeoutMs, unreachableMessage) {
   let response;
   try {
-    response = await fetch(`${WEATHER_SERVICE_URL}/weather/${cityId}`, {
+    response = await fetch(url, {
       headers: { Accept: "application/json" },
-      signal: AbortSignal.timeout(WEATHER_TIMEOUT_MS),
+      signal: AbortSignal.timeout(timeoutMs),
     });
   } catch (error) {
-    return { status: 504, body: { error: `Weather service unreachable: ${error.message}` } };
+    return { status: 504, body: { error: `${unreachableMessage}: ${error.message}` } };
   }
 
   try {
     return { status: response.status, body: await response.json() };
   } catch {
-    return { status: 502, body: { error: "Weather service returned invalid JSON" } };
+    return { status: 502, body: { error: "Upstream returned invalid JSON" } };
   }
+}
+
+async function fetchLive(cityId) {
+  const backend = CITY_BACKENDS[cityId];
+  if (backend === "agent") {
+    if (!AGENT_SERVICE_URL) {
+      return { status: 503, body: { error: "AGENT_SERVICE_URL is not configured" } };
+    }
+    const base = AGENT_SERVICE_URL.replace(/\/$/, "");
+    return fetchJson(`${base}/weather/${cityId}`, AGENT_TIMEOUT_MS, "Weather agent unreachable");
+  }
+
+  if (backend === "ecs") {
+    if (!WEATHER_SERVICE_URL) {
+      return { status: 503, body: { error: "WEATHER_SERVICE_URL is not configured" } };
+    }
+    const base = WEATHER_SERVICE_URL.replace(/\/$/, "");
+    return fetchJson(`${base}/weather/${cityId}`, WEATHER_TIMEOUT_MS, "Weather service unreachable");
+  }
+
+  return { status: 404, body: { error: `City '${cityId}' has no live backend` } };
 }
 
 const server = http.createServer(async (req, res) => {
@@ -113,5 +136,7 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(PORT, () => {
-  console.log(`main app listening on ${PORT}, weather service: ${WEATHER_SERVICE_URL || "unset"}`);
+  console.log(
+    `main app listening on ${PORT}, weather=${WEATHER_SERVICE_URL || "unset"} agent=${AGENT_SERVICE_URL || "unset"}`,
+  );
 });

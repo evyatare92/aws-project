@@ -1,5 +1,8 @@
 const ENDPOINT = "/api/weather";
-const LIVE_CITIES = new Set(["new-york"]);
+const CITY_SOURCES = {
+  "new-york": "ecs",
+  barcelona: "agent",
+};
 
 const ICONS = {
   sunny: '<circle cx="12" cy="12" r="4.5"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M19.1 4.9l-1.4 1.4M6.3 17.7l-1.4 1.4"/>',
@@ -11,6 +14,14 @@ const ICONS = {
   thunderstorm:
     '<path d="M7 14h10a3.5 3.5 0 0 0 .3-7 5 5 0 0 0-9.6 1.2A3 3 0 0 0 7 14z"/><path d="M13 16.5l-3 3h3l-1.5 3.5"/>',
 };
+
+function escapeHtml(value) {
+  return String(value)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;");
+}
 
 function icon(condition) {
   const paths = ICONS[condition] || ICONS.cloudy;
@@ -45,6 +56,7 @@ function card(entry) {
       </div>
       <p class="card-temp">${entry.temperatureC}&deg;C</p>
       <p class="card-condition">${entry.conditionLabel}</p>
+      ${entry.summary ? `<p class="card-summary">${escapeHtml(entry.summary)}</p>` : ""}
       <dl class="card-stats">
         <div>
           <dt>Feels like</dt>
@@ -113,14 +125,14 @@ function setSourceNote(text) {
 // Returns the card data plus where it came from, so the caller can report it.
 async function loadCityEntry(cityId) {
   const fallback = weatherData.cities.find((c) => c.id === cityId) || null;
+  const source = CITY_SOURCES[cityId];
 
-  if (!fallback || !LIVE_CITIES.has(cityId)) {
+  if (!fallback || !source) {
     return { entry: fallback, live: false };
   }
 
-  // Same-origin call into this app's own backend, which forwards it to the
-  // weather service on ECS. Cloud Map only resolves inside the VPC, so the
-  // browser cannot make that second hop itself.
+  // Same-origin call into this app's own backend, which forwards it to ECS
+  // (New York) or the Lambda weather agent (Barcelona).
   const startedAt = performance.now();
   const response = await fetch(`/api/live/weather/${cityId}`, { cache: "no-store" });
   const elapsedMs = Math.round(performance.now() - startedAt);
@@ -130,24 +142,25 @@ async function loadCityEntry(cityId) {
     throw new Error(body.error || `API server responded ${response.status} ${response.statusText}`);
   }
 
-  return { entry: await response.json(), live: true, elapsedMs, fallback };
+  return { entry: await response.json(), live: true, elapsedMs, fallback, source };
 }
 
 async function renderSelectedCity() {
   const select = document.getElementById("city-select");
   const cards = document.getElementById("cards");
   const cityId = select.value;
-  const isLive = LIVE_CITIES.has(cityId);
+  const source = CITY_SOURCES[cityId];
+  const sourceLabel = source === "agent" ? "Lambda weather agent" : "ECS weather service";
 
-  showStatus(isLive ? "Calling the ECS weather service…" : "Loading forecast…");
+  showStatus(source ? `Calling the ${sourceLabel}…` : "Loading forecast…");
   select.disabled = true;
 
   // Stays up for as long as the request is in flight; dismissed below once we
   // know the outcome, so the two toasts read as a before and an after.
-  const pending = isLive
+  const pending = source
     ? showToast(
         "Calling my api server to get the information",
-        `${select.options[select.selectedIndex].text} · live from ECS`,
+        `${select.options[select.selectedIndex].text} · live from ${sourceLabel}`,
         "pending",
         0,
       )
@@ -159,10 +172,15 @@ async function renderSelectedCity() {
     cards.innerHTML = result.entry ? card(result.entry) : "";
 
     if (result.live) {
-      showStatus(`Live data received from ECS in ${result.elapsedMs} ms.`);
-      setSourceNote("Live data from the ECS weather service (Open-Meteo upstream).");
+      const label = result.source === "agent" ? "Lambda weather agent" : "ECS weather service";
+      showStatus(`Live data received from the ${label} in ${result.elapsedMs} ms.`);
+      setSourceNote(
+        result.source === "agent"
+          ? "Live data from the Lambda weather agent (Claude Sonnet 4.5 + Open-Meteo)."
+          : "Live data from the ECS weather service (Open-Meteo upstream).",
+      );
       showToast(
-        "Data received from ECS",
+        result.source === "agent" ? "Data received from Lambda agent" : "Data received from ECS",
         `${result.entry.city} · ${result.entry.temperatureC}°C · ${result.elapsedMs} ms`,
       );
     } else {
@@ -171,13 +189,13 @@ async function renderSelectedCity() {
     }
   } catch (error) {
     pending?.dismiss();
-    // The ECS call failed; fall back to the bundled sample so the page still
+    // The live call failed; fall back to the bundled sample so the page still
     // shows something, and say plainly that the data is stale.
     const fallback = weatherData.cities.find((c) => c.id === cityId) || null;
     cards.innerHTML = fallback ? card(fallback) : "";
     showStatus("Live lookup failed — showing placeholder data.", true);
-    setSourceNote("Placeholder data: the ECS weather service did not respond.");
-    showToast("ECS request failed", error.message, "error", 7000);
+    setSourceNote("Placeholder data: the live weather backend did not respond.");
+    showToast("Live request failed", error.message, "error", 7000);
   } finally {
     select.disabled = false;
   }
