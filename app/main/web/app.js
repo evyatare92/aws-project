@@ -157,15 +157,16 @@ async function renderSelectedCity() {
     const result = await loadCityEntry(cityId);
     pending?.dismiss();
     cards.innerHTML = result.entry ? card(result.entry) : "";
-    document.getElementById("status").hidden = true;
 
     if (result.live) {
+      showStatus(`Live data received from ECS in ${result.elapsedMs} ms.`);
       setSourceNote("Live data from the ECS weather service (Open-Meteo upstream).");
       showToast(
         "Data received from ECS",
         `${result.entry.city} · ${result.entry.temperatureC}°C · ${result.elapsedMs} ms`,
       );
     } else {
+      document.getElementById("status").hidden = true;
       setSourceNote("Showing placeholder data — not a live weather feed.");
     }
   } catch (error) {
