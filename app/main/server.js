@@ -1,7 +1,10 @@
 import http from "node:http";
+import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { SQSClient, SendMessageCommand } from "@aws-sdk/client-sqs";
+import { DynamoDBClient, GetItemCommand } from "@aws-sdk/client-dynamodb";
 
 const PORT = Number(process.env.PORT || 8080);
 // Cloud Map name of the ECS weather service, injected by the Helm chart.
@@ -10,11 +13,20 @@ const WEATHER_TIMEOUT_MS = Number(process.env.WEATHER_TIMEOUT_MS || 10000);
 // Private API Gateway invoke URL (no path), injected by the Helm chart.
 const AGENT_SERVICE_URL = process.env.AGENT_SERVICE_URL || "";
 const AGENT_TIMEOUT_MS = Number(process.env.AGENT_TIMEOUT_MS || 25000);
+const WEATHER_QUEUE_URL = process.env.WEATHER_QUEUE_URL || "";
+const WEATHER_RESULTS_TABLE = process.env.WEATHER_RESULTS_TABLE || "";
+const SQS_TIMEOUT_MS = Number(process.env.SQS_TIMEOUT_MS || 20000);
+const AWS_REGION = process.env.AWS_REGION || process.env.AWS_DEFAULT_REGION || "eu-west-1";
 
 const CITY_BACKENDS = {
   "new-york": "ecs",
   barcelona: "agent",
+  bangkok: "sqs",
+  tokyo: "sqs",
 };
+
+const sqs = new SQSClient({ region: AWS_REGION });
+const dynamodb = new DynamoDBClient({ region: AWS_REGION });
 
 const WEB_ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "web");
 
@@ -99,7 +111,64 @@ async function fetchLive(cityId) {
     return fetchJson(`${base}/weather/${cityId}`, WEATHER_TIMEOUT_MS, "Weather service unreachable");
   }
 
+  if (backend === "sqs") {
+    return fetchViaSqs(cityId);
+  }
+
   return { status: 404, body: { error: `City '${cityId}' has no live backend` } };
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// SQS is one-way, so the Lambda writes the forecast to DynamoDB under requestId
+// and this process polls that item until it appears.
+async function fetchViaSqs(cityId) {
+  if (!WEATHER_QUEUE_URL || !WEATHER_RESULTS_TABLE) {
+    return { status: 503, body: { error: "WEATHER_QUEUE_URL or WEATHER_RESULTS_TABLE is not configured" } };
+  }
+
+  const requestId = randomUUID();
+  try {
+    await sqs.send(
+      new SendMessageCommand({
+        QueueUrl: WEATHER_QUEUE_URL,
+        MessageBody: JSON.stringify({ requestId, cityId }),
+      }),
+    );
+  } catch (error) {
+    return { status: 504, body: { error: `Failed to enqueue weather request: ${error.message}` } };
+  }
+
+  const deadline = Date.now() + SQS_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    let item;
+    try {
+      const result = await dynamodb.send(
+        new GetItemCommand({
+          TableName: WEATHER_RESULTS_TABLE,
+          Key: { requestId: { S: requestId } },
+          ConsistentRead: true,
+        }),
+      );
+      item = result.Item;
+    } catch (error) {
+      return { status: 504, body: { error: `Failed to read weather result: ${error.message}` } };
+    }
+
+    if (item?.payload?.S) {
+      const body = JSON.parse(item.payload.S);
+      if (item.status?.S === "ok") {
+        return { status: 200, body };
+      }
+      return { status: 502, body };
+    }
+
+    await sleep(250);
+  }
+
+  return { status: 504, body: { error: "Timed out waiting for the SQS weather function" } };
 }
 
 const server = http.createServer(async (req, res) => {
@@ -137,6 +206,6 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(PORT, () => {
   console.log(
-    `main app listening on ${PORT}, weather=${WEATHER_SERVICE_URL || "unset"} agent=${AGENT_SERVICE_URL || "unset"}`,
+    `main app listening on ${PORT}, weather=${WEATHER_SERVICE_URL || "unset"} agent=${AGENT_SERVICE_URL || "unset"} queue=${WEATHER_QUEUE_URL || "unset"}`,
   );
 });

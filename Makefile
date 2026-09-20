@@ -42,7 +42,7 @@ DEPLOY := aws cloudformation deploy --region $(AWS_REGION) \
 
 COMMON_PARAMS := ProjectName=$(PROJECT) Environment=$(ENV)
 
-.PHONY: all bootstrap registry network endpoints eks ecs lambda lambda-agent-package bastion bastion-tools connect lint outputs \
+.PHONY: all bootstrap registry network endpoints eks ecs lambda lambda-agent-package lambda-sqs-package bastion bastion-tools connect lint outputs \
 	app-login app-build version-bump app-push app-publish app-image app-push-all \
 	charts-version charts-stage \
 	app-deploy app-forward \
@@ -110,10 +110,25 @@ lambda-agent-package:
 	rm -rf .build
 	@echo "Uploaded s3://$(ARTIFACTS_BUCKET)/$(AGENT_S3_KEY)"
 
-lambda: lambda-agent-package
-	@ver=$$(aws s3api head-object --region $(AWS_REGION) --bucket $(ARTIFACTS_BUCKET) \
+SQS_DIR    := app/sqs-weather
+SQS_S3_KEY := lambda/sqs-weather/handler.zip
+
+lambda-sqs-package:
+	@test -f $(SQS_DIR)/handler.py || { echo "Missing $(SQS_DIR)/handler.py"; exit 1; }
+	rm -rf .build
+	mkdir -p .build/sqs
+	cp $(SQS_DIR)/handler.py .build/sqs/handler.py
+	cd .build/sqs && zip -qr ../sqs-weather.zip handler.py
+	aws s3 cp .build/sqs-weather.zip s3://$(ARTIFACTS_BUCKET)/$(SQS_S3_KEY) --region $(AWS_REGION)
+	rm -rf .build
+	@echo "Uploaded s3://$(ARTIFACTS_BUCKET)/$(SQS_S3_KEY)"
+
+lambda: lambda-agent-package lambda-sqs-package
+	@agent_ver=$$(aws s3api head-object --region $(AWS_REGION) --bucket $(ARTIFACTS_BUCKET) \
 		--key $(AGENT_S3_KEY) --query VersionId --output text) && \
-	params="$(COMMON_PARAMS) AgentCodeS3Key=$(AGENT_S3_KEY) AgentCodeS3ObjectVersion=$$ver" && \
+	sqs_ver=$$(aws s3api head-object --region $(AWS_REGION) --bucket $(ARTIFACTS_BUCKET) \
+		--key $(SQS_S3_KEY) --query VersionId --output text) && \
+	params="$(COMMON_PARAMS) AgentCodeS3Key=$(AGENT_S3_KEY) AgentCodeS3ObjectVersion=$$agent_ver SqsCodeS3Key=$(SQS_S3_KEY) SqsCodeS3ObjectVersion=$$sqs_ver" && \
 	if [ -n "$(ANTHROPIC_API_KEY)" ]; then params="$$params AnthropicApiKey=$(ANTHROPIC_API_KEY)"; fi && \
 	$(DEPLOY) --stack-name $(STACK_PREFIX)-lambda \
 		--template-file $(INFRA)/40-lambda/functions.yaml \
@@ -122,8 +137,8 @@ lambda: lambda-agent-package
 		--stack-name $(STACK_PREFIX)-lambda \
 		--query 'Stacks[0].Outputs[?OutputKey==`PrivateApiId`].OutputValue' --output text) && \
 	aws apigateway create-deployment --region $(AWS_REGION) --rest-api-id $$api \
-		--stage-name v1 --description "agent $$ver" >/dev/null && \
-	echo "Lambda agent deployed. Pass ANTHROPIC_API_KEY=... if the secret is still empty."
+		--stage-name v1 --description "agent $$agent_ver sqs $$sqs_ver" >/dev/null && \
+	echo "Lambda agent and SQS weather function deployed. Pass ANTHROPIC_API_KEY=... if the secret is still empty."
 
 # Deploy after eks, so the cluster exports the bastion's access entry needs exist.
 bastion:
@@ -195,6 +210,24 @@ charts-version:
 	if [ -n "$$url" ] && [ "$$url" != "None" ]; then \
 		sed -i -E "/^agent:/,/^[[:space:]]*$$/ s|^  serviceUrl:.*|  serviceUrl: $$url|" $(MAIN_VALUES); \
 		echo "$(MAIN_VALUES): agent.serviceUrl set to $$url"; \
+	fi
+	@qurl=$$(aws cloudformation list-exports --region $(AWS_REGION) \
+		--query "Exports[?Name=='$(STACK_PREFIX)-WorkQueueUrl'].Value" --output text 2>/dev/null); \
+	if [ -n "$$qurl" ] && [ "$$qurl" != "None" ]; then \
+		sed -i -E "/^queue:/,/^[[:space:]]*$$/ s|^  queueUrl:.*|  queueUrl: $$qurl|" $(MAIN_VALUES); \
+		echo "$(MAIN_VALUES): queue.queueUrl set to $$qurl"; \
+	fi
+	@table=$$(aws cloudformation list-exports --region $(AWS_REGION) \
+		--query "Exports[?Name=='$(STACK_PREFIX)-WeatherResultsTableName'].Value" --output text 2>/dev/null); \
+	if [ -n "$$table" ] && [ "$$table" != "None" ]; then \
+		sed -i -E "/^queue:/,/^[[:space:]]*$$/ s|^  resultsTable:.*|  resultsTable: $$table|" $(MAIN_VALUES); \
+		echo "$(MAIN_VALUES): queue.resultsTable set to $$table"; \
+	fi
+	@role=$$(aws cloudformation list-exports --region $(AWS_REGION) \
+		--query "Exports[?Name=='$(STACK_PREFIX)-MainAppRoleArn'].Value" --output text 2>/dev/null); \
+	if [ -n "$$role" ] && [ "$$role" != "None" ]; then \
+		sed -i -E "/^serviceAccount:/,/^[[:space:]]*$$/ s|^  roleArn:.*|  roleArn: $$role|" $(MAIN_VALUES); \
+		echo "$(MAIN_VALUES): serviceAccount.roleArn set to $$role"; \
 	fi
 
 # The bastion has no internet route, so charts travel via the artifacts bucket.

@@ -49,9 +49,27 @@ Parameters:
     Default: ''
     Description: S3 object version of the agent zip. Makefile always passes this.
 
+  SqsCodeS3Key:
+    Type: String
+    Default: lambda/sqs-weather/handler.zip
+
+  SqsCodeS3ObjectVersion:
+    Type: String
+    Default: ''
+    Description: S3 object version of the SQS weather zip. Makefile always passes this.
+
+  MainAppNamespace:
+    Type: String
+    Default: weather
+
+  MainAppServiceAccount:
+    Type: String
+    Default: weather-main
+
 Conditions:
   SetAnthropicApiKey: !Not [!Equals [!Ref AnthropicApiKey, '']]
   HasAgentCodeVersion: !Not [!Equals [!Ref AgentCodeS3ObjectVersion, '']]
+  HasSqsCodeVersion: !Not [!Equals [!Ref SqsCodeS3ObjectVersion, '']]
 
 Resources:
   LambdaSecurityGroup:
@@ -153,6 +171,55 @@ Resources:
                   - sqs:GetQueueAttributes
                   - sqs:ChangeMessageVisibility
                 Resource: !GetAtt WorkQueue.Arn
+              - Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                Resource: !GetAtt WeatherResultsTable.Arn
+
+  MainAppRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectName}-${Environment}-main-app'
+      AssumeRolePolicyDocument: !Sub
+        - |
+          {
+            "Version": "2012-10-17",
+            "Statement": [
+              {
+                "Effect": "Allow",
+                "Principal": { "Federated": "${ProviderArn}" },
+                "Action": "sts:AssumeRoleWithWebIdentity",
+                "Condition": {
+                  "StringEquals": {
+                    "${IssuerHost}:aud": "sts.amazonaws.com",
+                    "${IssuerHost}:sub": "system:serviceaccount:${Namespace}:${ServiceAccount}"
+                  }
+                }
+              }
+            ]
+          }
+        - ProviderArn: !ImportValue
+            'Fn::Sub': '${ProjectName}-${Environment}-EksOidcProviderArn'
+          IssuerHost: !ImportValue
+            'Fn::Sub': '${ProjectName}-${Environment}-EksOidcIssuerHost'
+          Namespace: !Ref MainAppNamespace
+          ServiceAccount: !Ref MainAppServiceAccount
+      Policies:
+        - PolicyName: enqueue-and-read-weather
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - sqs:SendMessage
+                Resource: !GetAtt WorkQueue.Arn
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                Resource: !GetAtt WeatherResultsTable.Arn
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-main-app'
 
   HttpLambda:
     Type: AWS::Lambda::Function
@@ -237,12 +304,15 @@ Resources:
     Type: AWS::Lambda::Function
     Properties:
       FunctionName: !Sub '${ProjectName}-${Environment}-sqs'
-      Description: Triggered by messages on the internal SQS queue.
+      Description: SQS-triggered live weather for Bangkok and Tokyo.
       Runtime: !Ref LambdaRuntime
-      Handler: index.handler
+      Handler: !If
+        - HasSqsCodeVersion
+        - handler.handler
+        - index.handler
       Role: !GetAtt SqsLambdaRole.Arn
       Timeout: !Ref LambdaTimeout
-      MemorySize: 128
+      MemorySize: 256
       VpcConfig:
         SecurityGroupIds:
           - !Ref LambdaSecurityGroup
@@ -250,12 +320,18 @@ Resources:
           - ','
           - !ImportValue
             'Fn::Sub': '${ProjectName}-${Environment}-AppSubnetIds'
-      Code:
-        ZipFile: |
-          def handler(event, context):
-              for record in event.get('Records', []):
-                  print(f"Processing message: {record.get('messageId')} body={record.get('body')}")
-              return {'batchItemFailures': []}
+      Environment:
+        Variables:
+          RESULTS_TABLE: !Ref WeatherResultsTable
+      Code: !If
+        - HasSqsCodeVersion
+        - S3Bucket: !ImportValue
+            'Fn::Sub': '${ProjectName}-${Environment}-ArtifactsBucket'
+          S3Key: !Ref SqsCodeS3Key
+          S3ObjectVersion: !Ref SqsCodeS3ObjectVersion
+        - ZipFile: |
+            def handler(event, context):
+                return {'batchItemFailures': []}
       Tags:
         - Key: Name
           Value: !Sub '${ProjectName}-${Environment}-sqs'
@@ -282,6 +358,24 @@ Resources:
         - Key: Name
           Value: !Sub '${ProjectName}-${Environment}-lambda-work'
 
+  WeatherResultsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub '${ProjectName}-${Environment}-weather-results'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: requestId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: requestId
+          KeyType: HASH
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-weather-results'
+
   SqsEventSourceMapping:
     Type: AWS::Lambda::EventSourceMapping
     Properties:
@@ -289,6 +383,8 @@ Resources:
       Enabled: true
       EventSourceArn: !GetAtt WorkQueue.Arn
       FunctionName: !Ref SqsLambda
+      FunctionResponseTypes:
+        - ReportBatchItemFailures
 
   PrivateApi:
     Type: AWS::ApiGateway::RestApi
@@ -429,6 +525,16 @@ Outputs:
     Value: !GetAtt WorkQueue.Arn
     Export:
       Name: !Sub '${ProjectName}-${Environment}-WorkQueueArn'
+
+  WeatherResultsTableName:
+    Value: !Ref WeatherResultsTable
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-WeatherResultsTableName'
+
+  MainAppRoleArn:
+    Value: !GetAtt MainAppRole.Arn
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-MainAppRoleArn'
 
   PrivateApiId:
     Value: !Ref PrivateApi

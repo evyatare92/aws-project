@@ -35,6 +35,16 @@ spec:
             - name: AGENT_SERVICE_URL
               value: {{ . | quote }}
             {{- end }}
+            - name: AWS_REGION
+              value: {{ .Values.awsRegion | default "eu-west-1" | quote }}
+            {{- with .Values.queue.queueUrl }}
+            - name: WEATHER_QUEUE_URL
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.queue.resultsTable }}
+            - name: WEATHER_RESULTS_TABLE
+              value: {{ . | quote }}
+            {{- end }}
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
           livenessProbe:

@@ -123,6 +123,21 @@ Resources:
         - Key: Name
           Value: !Sub '${ProjectName}-${Environment}'
 
+  # IRSA: the main-app pods assume an IAM role instead of the node's. Needed
+  # because the launch template sets IMDSv2 hop limit to 1, so pods cannot use
+  # instance credentials to send SQS messages.
+  EksOidcProvider:
+    Type: AWS::IAM::OIDCProvider
+    Properties:
+      Url: !GetAtt EksCluster.OpenIdConnectIssuerUrl
+      ClientIdList:
+        - sts.amazonaws.com
+      ThumbprintList:
+        - 9e99a48a9960b14926bb7f3b02e22da2b0ab7280
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-eks-oidc'
+
   NodeRole:
     Type: AWS::IAM::Role
     Properties:
@@ -332,6 +347,17 @@ Outputs:
     Value: !GetAtt EksUser.Arn
     Export:
       Name: !Sub '${ProjectName}-${Environment}-EksUserArn'
+
+  EksOidcProviderArn:
+    Value: !Ref EksOidcProvider
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-EksOidcProviderArn'
+
+  EksOidcIssuerHost:
+    Description: OIDC issuer host (no https://), used as the IRSA condition key.
+    Value: !Select [1, !Split ['https://', !GetAtt EksCluster.OpenIdConnectIssuerUrl]]
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-EksOidcIssuerHost'
 
   KubeconfigHint:
     Value: !Sub >-

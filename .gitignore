@@ -1,4 +1,6 @@
 .build/
 *.zip
 .env
+**/__pycache__/
+app/main/node_modules/
 __pycache__/

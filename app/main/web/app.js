@@ -2,6 +2,26 @@ const ENDPOINT = "/api/weather";
 const CITY_SOURCES = {
   "new-york": "ecs",
   barcelona: "agent",
+  bangkok: "sqs",
+  tokyo: "sqs",
+};
+
+const SOURCE_COPY = {
+  ecs: {
+    pending: "ECS weather service",
+    toast: "Data received from ECS",
+    note: "Live data from the ECS weather service (Open-Meteo upstream).",
+  },
+  agent: {
+    pending: "Lambda weather agent",
+    toast: "Data received from Lambda agent",
+    note: "Live data from the Lambda weather agent (Claude Sonnet 4.5 + Open-Meteo).",
+  },
+  sqs: {
+    pending: "SQS weather Lambda",
+    toast: "Data received from SQS Lambda",
+    note: "Live data from the SQS-triggered Lambda (Open-Meteo upstream).",
+  },
 };
 
 const ICONS = {
@@ -132,7 +152,7 @@ async function loadCityEntry(cityId) {
   }
 
   // Same-origin call into this app's own backend, which forwards it to ECS
-  // (New York) or the Lambda weather agent (Barcelona).
+  // (New York), the Lambda weather agent (Barcelona), or SQS (Bangkok/Tokyo).
   const startedAt = performance.now();
   const response = await fetch(`/api/live/weather/${cityId}`, { cache: "no-store" });
   const elapsedMs = Math.round(performance.now() - startedAt);
@@ -150,17 +170,17 @@ async function renderSelectedCity() {
   const cards = document.getElementById("cards");
   const cityId = select.value;
   const source = CITY_SOURCES[cityId];
-  const sourceLabel = source === "agent" ? "Lambda weather agent" : "ECS weather service";
+  const copy = SOURCE_COPY[source];
 
-  showStatus(source ? `Calling the ${sourceLabel}…` : "Loading forecast…");
+  showStatus(copy ? `Calling the ${copy.pending}…` : "Loading forecast…");
   select.disabled = true;
 
   // Stays up for as long as the request is in flight; dismissed below once we
   // know the outcome, so the two toasts read as a before and an after.
-  const pending = source
+  const pending = copy
     ? showToast(
         "Calling my api server to get the information",
-        `${select.options[select.selectedIndex].text} · live from ${sourceLabel}`,
+        `${select.options[select.selectedIndex].text} · live from ${copy.pending}`,
         "pending",
         0,
       )
@@ -172,15 +192,11 @@ async function renderSelectedCity() {
     cards.innerHTML = result.entry ? card(result.entry) : "";
 
     if (result.live) {
-      const label = result.source === "agent" ? "Lambda weather agent" : "ECS weather service";
-      showStatus(`Live data received from the ${label} in ${result.elapsedMs} ms.`);
-      setSourceNote(
-        result.source === "agent"
-          ? "Live data from the Lambda weather agent (Claude Sonnet 4.5 + Open-Meteo)."
-          : "Live data from the ECS weather service (Open-Meteo upstream).",
-      );
+      const liveCopy = SOURCE_COPY[result.source] || SOURCE_COPY.ecs;
+      showStatus(`Live data received from the ${liveCopy.pending} in ${result.elapsedMs} ms.`);
+      setSourceNote(liveCopy.note);
       showToast(
-        result.source === "agent" ? "Data received from Lambda agent" : "Data received from ECS",
+        liveCopy.toast,
         `${result.entry.city} · ${result.entry.temperatureC}°C · ${result.elapsedMs} ms`,
       );
     } else {

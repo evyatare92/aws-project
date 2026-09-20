@@ -4,12 +4,14 @@ image:
   repository: 034971967415.dkr.ecr.eu-west-1.amazonaws.com/aws-project-dev/main
   # Rewritten by "make charts-stage" from app/main/.version. Do not set this to
   # a mutable tag like "latest": nodes that already cached it never pull again.
-  tag: "1.2.3"
+  tag: "1.2.4"
   pullPolicy: IfNotPresent
 
 serviceAccount:
   create: true
   name: ""
+  # IRSA role from infra/40-lambda/functions.yaml. Filled in by "make charts-stage".
+  roleArn: arn:aws:iam::034971967415:role/aws-project-dev-main-app
 
 service:
   # NodePort rather than LoadBalancer: this VPC has no internet route and no
@@ -73,3 +75,9 @@ agent:
   # Private API Gateway invoke URL (stage only, no /weather path). Filled in by
   # "make charts-stage" from the aws-project-dev-AgentApiUrl export.
   serviceUrl: https://19vuy25gvg.execute-api.eu-west-1.amazonaws.com/v1
+
+queue:
+  # Work queue + DynamoDB results table for Bangkok/Tokyo. Filled in by
+  # "make charts-stage" from the lambda stack exports.
+  queueUrl: https://sqs.eu-west-1.amazonaws.com/034971967415/aws-project-dev-lambda-work
+  resultsTable: aws-project-dev-weather-results
