@@ -44,3 +44,23 @@ else
 fi
 
 kubectl get pods,svc -n "$NAMESPACE" -l "app.kubernetes.io/instance=${RELEASE}"
+
+if kubectl get gateway -n "$NAMESPACE" -o name 2>/dev/null | grep -q .; then
+  echo "Waiting for Gateway address..."
+  host=""
+  for _ in $(seq 1 36); do
+    host="$(kubectl get gateway -n "$NAMESPACE" \
+      -o jsonpath='{.items[0].status.addresses[0].value}' 2>/dev/null || true)"
+    if [ -n "$host" ]; then
+      break
+    fi
+    sleep 5
+  done
+  kubectl get gateway,httproute -n "$NAMESPACE"
+  if [ -n "$host" ]; then
+    echo "Gateway URL: http://${host}"
+  else
+    echo "Gateway address not ready yet."
+    kubectl describe gateway -n "$NAMESPACE" | tail -n 40 || true
+  fi
+fi

@@ -14,13 +14,22 @@ serviceAccount:
   roleArn: arn:aws:iam::034971967415:role/aws-project-dev-main-app
 
 service:
-  # NodePort rather than LoadBalancer: this VPC has no internet route and no
-  # AWS Load Balancer Controller, so the bastion reaches the app on the node
-  # port and SSM forwards it to your PC.
+  # NodePort stays so "make app-forward" still works through the bastion.
+  # Public access is Gateway API (see gateway.) not Service type=LoadBalancer.
   type: NodePort
   port: 80
   targetPort: 8080
   nodePort: 30080
+
+gateway:
+  # Resources are rendered only when sourceRange is set ("make alb").
+  enabled: true
+  className: aws-alb
+  loadBalancerName: aws-project-dev-gw
+  sourceRange: "81.199.237.9/32"
+  # Public subnet IDs (AZs a/b/c). Filled by "make charts-stage" from NAT stack exports.
+  subnetIds: "subnet-0341dec6d1538679e,subnet-05d928b25a6f078ee,subnet-0fee9644a18a6f3a6"
+  healthCheckPath: /healthz
 
 # The node image's built-in "node" user is uid 1000 and binds 8080, so nothing
 # here needs root.

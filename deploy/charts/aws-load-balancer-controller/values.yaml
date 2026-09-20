@@ -1,0 +1,34 @@
+# Overrides for the upstream eks/aws-load-balancer-controller chart.
+# clusterName, region, vpcId and the IRSA annotation are filled by "make lbc-stage".
+
+replicaCount: 1
+
+clusterName: aws-project-dev
+region: eu-west-1
+vpcId: ""
+
+serviceAccount:
+  create: true
+  name: aws-load-balancer-controller
+  annotations:
+    eks.amazonaws.com/role-arn: ""
+
+# Gateway is the public path; do not steal Service type=LoadBalancer.
+enableServiceMutatorWebhook: false
+
+# IRSA supplies credentials; skip Shield/WAF probes we do not use.
+enableShield: false
+enableWaf: false
+enableWafv2: false
+
+controllerConfig:
+  featureGates:
+    ALBGatewayAPI: true
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 200m
+    memory: 128Mi

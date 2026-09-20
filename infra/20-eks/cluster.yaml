@@ -138,6 +138,18 @@ Resources:
         - Key: Name
           Value: !Sub '${ProjectName}-${Environment}-eks-oidc'
 
+  # AWS Load Balancer Controller webhook. The API server talks to pods on 9443
+  # from the additional cluster security group attached to control-plane ENIs.
+  ControllerWebhookFromControlPlane:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !GetAtt EksCluster.ClusterSecurityGroupId
+      IpProtocol: tcp
+      FromPort: 9443
+      ToPort: 9443
+      SourceSecurityGroupId: !Ref ClusterSecurityGroup
+      Description: LBC webhook from the EKS control plane
+
   NodeRole:
     Type: AWS::IAM::Role
     Properties:

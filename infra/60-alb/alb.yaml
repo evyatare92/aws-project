@@ -1,8 +1,8 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Description: >-
-  Internet-facing Application Load Balancer for the EKS NodePort app. Inbound
-  HTTP is limited to a single CIDR (your PC). A second public subnet is added
-  because an ALB requires two Availability Zones.
+  Legacy CloudFormation ALB for the EKS NodePort app. Prefer Gateway API via
+  "make alb" (AWS Load Balancer Controller). Kept so destroy-alb still works.
+  Public subnets come from the NAT stack.
 
 Parameters:
   ProjectName:
@@ -28,30 +28,6 @@ Parameters:
     Description: Must match service.nodePort in the Helm chart.
 
 Resources:
-  # ALB needs two AZs. The NAT stack already owns 10.0.104.0/24 in AZ-a.
-  AlbPublicSubnetB:
-    Type: AWS::EC2::Subnet
-    Properties:
-      VpcId: !ImportValue
-        'Fn::Sub': '${ProjectName}-${Environment}-VpcId'
-      AvailabilityZone: !Select [1, !GetAZs '']
-      CidrBlock: !Select [105, !Cidr [!ImportValue { 'Fn::Sub': '${ProjectName}-${Environment}-VpcCidr' }, 256, 8]]
-      MapPublicIpOnLaunch: true
-      Tags:
-        - Key: Name
-          Value: !Sub '${ProjectName}-${Environment}-alb-public-b'
-        - Key: Tier
-          Value: alb
-        - Key: kubernetes.io/role/elb
-          Value: '1'
-
-  AlbPublicSubnetBAssociation:
-    Type: AWS::EC2::SubnetRouteTableAssociation
-    Properties:
-      SubnetId: !Ref AlbPublicSubnetB
-      RouteTableId: !ImportValue
-        'Fn::Sub': '${ProjectName}-${Environment}-NatPublicRouteTableId'
-
   AlbSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
@@ -112,7 +88,8 @@ Resources:
       Subnets:
         - !ImportValue
             'Fn::Sub': '${ProjectName}-${Environment}-NatPublicSubnetId'
-        - !Ref AlbPublicSubnetB
+        - !ImportValue
+            'Fn::Sub': '${ProjectName}-${Environment}-AlbPublicSubnetBId'
       SecurityGroups:
         - !Ref AlbSecurityGroup
       Tags:

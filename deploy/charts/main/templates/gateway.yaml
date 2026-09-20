@@ -1,0 +1,83 @@
+{{- if and .Values.gateway.enabled .Values.gateway.sourceRange }}
+apiVersion: gateway.networking.k8s.io/v1
+kind: GatewayClass
+metadata:
+  name: {{ .Values.gateway.className }}
+spec:
+  controllerName: gateway.k8s.aws/alb
+---
+apiVersion: gateway.k8s.aws/v1
+kind: LoadBalancerConfiguration
+metadata:
+  name: {{ include "main.fullname" . }}
+  labels:
+    {{- include "main.labels" . | nindent 4 }}
+spec:
+  scheme: internet-facing
+  ipAddressType: ipv4
+  {{- with .Values.gateway.loadBalancerName }}
+  loadBalancerName: {{ . | quote }}
+  {{- end }}
+  sourceRanges:
+    - {{ .Values.gateway.sourceRange | quote }}
+  {{- if .Values.gateway.subnetIds }}
+  loadBalancerSubnets:
+    {{- range splitList "," .Values.gateway.subnetIds }}
+    - identifier: {{ . | quote }}
+    {{- end }}
+  {{- end }}
+---
+apiVersion: gateway.k8s.aws/v1
+kind: TargetGroupConfiguration
+metadata:
+  name: {{ include "main.fullname" . }}
+  labels:
+    {{- include "main.labels" . | nindent 4 }}
+spec:
+  targetReference:
+    kind: Service
+    name: {{ include "main.fullname" . }}
+  defaultConfiguration:
+    targetType: ip
+    healthCheckConfig:
+      healthCheckPath: {{ .Values.gateway.healthCheckPath | quote }}
+      healthCheckProtocol: HTTP
+      matcher:
+        httpCode: "200"
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: {{ include "main.fullname" . }}
+  labels:
+    {{- include "main.labels" . | nindent 4 }}
+spec:
+  gatewayClassName: {{ .Values.gateway.className }}
+  infrastructure:
+    parametersRef:
+      group: gateway.k8s.aws
+      kind: LoadBalancerConfiguration
+      name: {{ include "main.fullname" . }}
+  listeners:
+    - name: http
+      protocol: HTTP
+      port: 80
+      allowedRoutes:
+        namespaces:
+          from: Same
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ include "main.fullname" . }}
+  labels:
+    {{- include "main.labels" . | nindent 4 }}
+spec:
+  parentRefs:
+    - name: {{ include "main.fullname" . }}
+      sectionName: http
+  rules:
+    - backendRefs:
+        - name: {{ include "main.fullname" . }}
+          port: {{ .Values.service.port }}
+{{- end }}
