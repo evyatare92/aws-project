@@ -29,6 +29,8 @@ NAMESPACE  ?= weather
 # Must match service.nodePort in the chart and AppNodePort in the bastion stack.
 NODE_PORT  ?= 30080
 LOCAL_PORT ?= 8080
+# Public ALB source. Empty means "detect this machine's public IP".
+CLIENT_CIDR ?=
 
 AWS_ACCOUNT_ID := $(shell aws sts get-caller-identity --query Account --output text 2>/dev/null)
 ECR_REGISTRY   := $(AWS_ACCOUNT_ID).dkr.ecr.$(AWS_REGION).amazonaws.com
@@ -45,8 +47,8 @@ COMMON_PARAMS := ProjectName=$(PROJECT) Environment=$(ENV)
 .PHONY: all bootstrap registry network endpoints eks ecs lambda lambda-agent-package lambda-sqs-package bastion bastion-tools connect lint outputs \
 	app-login app-build version-bump app-push app-publish app-image app-push-all \
 	charts-version charts-stage \
-	app-deploy app-forward \
-	destroy-registry destroy-eks destroy-ecs destroy-ecs-weather destroy-lambda destroy-bastion destroy-network destroy-nat
+	app-deploy app-forward alb \
+	destroy-registry destroy-eks destroy-ecs destroy-ecs-weather destroy-lambda destroy-bastion destroy-alb destroy-network destroy-nat
 
 # Order matters: endpoints import the VPC's exports; compute stacks need those endpoints.
 all: bootstrap registry network endpoints eks ecs lambda bastion
@@ -281,6 +283,33 @@ app-forward:
 		--document-name AWS-StartPortForwardingSessionToRemoteHost \
 		--parameters host="$(NODE_IP)",portNumber="$(NODE_PORT)",localPortNumber="$(LOCAL_PORT)"
 
+# Internet-facing ALB on port 80, locked to CLIENT_CIDR (defaults to this PC).
+# Nodes are registered by attaching the EKS node-group ASG to the target group.
+alb:
+	@cidr="$(CLIENT_CIDR)"; \
+	if [ -z "$$cidr" ]; then \
+		ip=$$(curl -sS https://checkip.amazonaws.com | tr -d '[:space:]'); \
+		test -n "$$ip" || { echo "Could not detect public IP. Pass CLIENT_CIDR=x.x.x.x/32"; exit 1; }; \
+		cidr="$$ip/32"; \
+	fi; \
+	echo "Deploying ALB allowed from $$cidr"; \
+	$(DEPLOY) --stack-name $(STACK_PREFIX)-alb \
+		--template-file $(INFRA)/60-alb/alb.yaml \
+		--parameter-overrides $(COMMON_PARAMS) AllowedCidr=$$cidr NodePort=$(NODE_PORT)
+	@tg=$$(aws cloudformation describe-stacks --region $(AWS_REGION) \
+		--stack-name $(STACK_PREFIX)-alb \
+		--query 'Stacks[0].Outputs[?OutputKey==`AppTargetGroupArn`].OutputValue' --output text) && \
+	asg=$$(aws autoscaling describe-auto-scaling-groups --region $(AWS_REGION) \
+		--query "AutoScalingGroups[?Tags[?Key=='eks:cluster-name' && Value=='$(STACK_PREFIX)']].AutoScalingGroupName" \
+		--output text) && \
+	test -n "$$asg" -a "$$asg" != "None" || { echo "No EKS node Auto Scaling group found."; exit 1; }; \
+	echo "Attaching ASG $$asg to target group"; \
+	aws autoscaling attach-load-balancer-target-groups --region $(AWS_REGION) \
+		--auto-scaling-group-name $$asg --target-group-arns $$tg 2>/dev/null || true
+	@aws cloudformation describe-stacks --region $(AWS_REGION) \
+		--stack-name $(STACK_PREFIX)-alb \
+		--query 'Stacks[0].Outputs[?OutputKey==`AlbUrl`].OutputValue' --output text
+
 # The bastion has no internet route, so fetch tools here and push them to S3.
 bastion-tools:
 	@tmp=$$(mktemp -d) && \
@@ -297,7 +326,8 @@ connect:
 
 lint:
 	cfn-lint $(INFRA)/00-bootstrap/*.yaml $(INFRA)/15-registry/*.yaml $(INFRA)/10-network/*.yaml \
-		$(INFRA)/20-eks/*.yaml $(INFRA)/30-ecs/*.yaml $(INFRA)/31-ecs/*.yaml $(INFRA)/40-lambda/*.yaml $(INFRA)/50-bastion/*.yaml
+		$(INFRA)/20-eks/*.yaml $(INFRA)/30-ecs/*.yaml $(INFRA)/31-ecs/*.yaml $(INFRA)/40-lambda/*.yaml \
+		$(INFRA)/50-bastion/*.yaml $(INFRA)/60-alb/*.yaml
 
 outputs:
 	@aws cloudformation describe-stacks --region $(AWS_REGION) \
@@ -333,8 +363,12 @@ destroy-bastion:
 	aws cloudformation delete-stack --region $(AWS_REGION) --stack-name $(STACK_PREFIX)-bastion
 	aws cloudformation wait stack-delete-complete --region $(AWS_REGION) --stack-name $(STACK_PREFIX)-bastion
 
+destroy-alb:
+	aws cloudformation delete-stack --region $(AWS_REGION) --stack-name $(STACK_PREFIX)-alb
+	aws cloudformation wait stack-delete-complete --region $(AWS_REGION) --stack-name $(STACK_PREFIX)-alb
+
 # Endpoints must go before the VPC: the VPC's exports are in use until they do.
-destroy-network: destroy-bastion destroy-eks destroy-ecs destroy-lambda destroy-nat
+destroy-network: destroy-alb destroy-bastion destroy-eks destroy-ecs destroy-lambda destroy-nat
 	aws cloudformation delete-stack --region $(AWS_REGION) --stack-name $(STACK_PREFIX)-endpoints
 	aws cloudformation wait stack-delete-complete --region $(AWS_REGION) --stack-name $(STACK_PREFIX)-endpoints
 	aws cloudformation delete-stack --region $(AWS_REGION) --stack-name $(STACK_PREFIX)-vpc

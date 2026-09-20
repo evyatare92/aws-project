@@ -1,0 +1,146 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  Internet-facing Application Load Balancer for the EKS NodePort app. Inbound
+  HTTP is limited to a single CIDR (your PC). A second public subnet is added
+  because an ALB requires two Availability Zones.
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: aws-project
+    AllowedPattern: '^[a-z0-9][a-z0-9-]{1,30}[a-z0-9]$'
+
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues: [dev, staging, prod]
+
+  AllowedCidr:
+    Type: String
+    AllowedPattern: '^(\d{1,3}\.){3}\d{1,3}/\d{1,2}$'
+    Description: Source CIDR allowed to reach the ALB, typically YOUR_PUBLIC_IP/32.
+
+  NodePort:
+    Type: Number
+    Default: 30080
+    MinValue: 30000
+    MaxValue: 32767
+    Description: Must match service.nodePort in the Helm chart.
+
+Resources:
+  # ALB needs two AZs. The NAT stack already owns 10.0.104.0/24 in AZ-a.
+  AlbPublicSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !ImportValue
+        'Fn::Sub': '${ProjectName}-${Environment}-VpcId'
+      AvailabilityZone: !Select [1, !GetAZs '']
+      CidrBlock: !Select [105, !Cidr [!ImportValue { 'Fn::Sub': '${ProjectName}-${Environment}-VpcCidr' }, 256, 8]]
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-alb-public-b'
+        - Key: Tier
+          Value: alb
+        - Key: kubernetes.io/role/elb
+          Value: '1'
+
+  AlbPublicSubnetBAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref AlbPublicSubnetB
+      RouteTableId: !ImportValue
+        'Fn::Sub': '${ProjectName}-${Environment}-NatPublicRouteTableId'
+
+  AlbSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !Sub 'Public ALB for ${ProjectName}-${Environment} (your IP only)'
+      VpcId: !ImportValue
+        'Fn::Sub': '${ProjectName}-${Environment}-VpcId'
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: !Ref AllowedCidr
+          Description: HTTP from the allowed client CIDR
+      SecurityGroupEgress:
+        - IpProtocol: '-1'
+          CidrIp: 0.0.0.0/0
+          Description: All outbound traffic
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-alb'
+
+  AppNodePortFromAlb:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !ImportValue
+        'Fn::Sub': '${ProjectName}-${Environment}-EksNodeSecurityGroupId'
+      IpProtocol: tcp
+      FromPort: !Ref NodePort
+      ToPort: !Ref NodePort
+      SourceSecurityGroupId: !Ref AlbSecurityGroup
+      Description: Web app NodePort from the public ALB
+
+  AppTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub '${ProjectName}-${Environment}-app'
+      VpcId: !ImportValue
+        'Fn::Sub': '${ProjectName}-${Environment}-VpcId'
+      Protocol: HTTP
+      Port: !Ref NodePort
+      TargetType: instance
+      HealthCheckEnabled: true
+      HealthCheckProtocol: HTTP
+      HealthCheckPath: /healthz
+      HealthCheckPort: traffic-port
+      Matcher:
+        HttpCode: '200'
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-app'
+
+  ApplicationLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: !Sub '${ProjectName}-${Environment}-app'
+      Type: application
+      Scheme: internet-facing
+      IpAddressType: ipv4
+      Subnets:
+        - !ImportValue
+            'Fn::Sub': '${ProjectName}-${Environment}-NatPublicSubnetId'
+        - !Ref AlbPublicSubnetB
+      SecurityGroups:
+        - !Ref AlbSecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-app'
+
+  HttpListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref ApplicationLoadBalancer
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref AppTargetGroup
+
+Outputs:
+  AlbDnsName:
+    Value: !GetAtt ApplicationLoadBalancer.DNSName
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-AlbDnsName'
+
+  AlbUrl:
+    Value: !Sub 'http://${ApplicationLoadBalancer.DNSName}'
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-AlbUrl'
+
+  AppTargetGroupArn:
+    Value: !Ref AppTargetGroup
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-AppTargetGroupArn'

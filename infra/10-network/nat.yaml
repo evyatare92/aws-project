@@ -44,6 +44,8 @@ Resources:
           Value: !Sub '${ProjectName}-${Environment}-nat-public-a'
         - Key: Tier
           Value: nat
+        - Key: kubernetes.io/role/elb
+          Value: '1'
 
   NatPublicRouteTable:
     Type: AWS::EC2::RouteTable
@@ -115,3 +117,13 @@ Outputs:
     Value: !Ref NatGateway
     Export:
       Name: !Sub '${ProjectName}-${Environment}-NatGatewayId'
+
+  NatPublicSubnetId:
+    Value: !Ref NatPublicSubnet
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-NatPublicSubnetId'
+
+  NatPublicRouteTableId:
+    Value: !Ref NatPublicRouteTable
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-NatPublicRouteTableId'
