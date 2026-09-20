@@ -8,6 +8,7 @@ key is read from ANTHROPIC_API_KEY, or fetched from Secrets Manager on cold star
 from __future__ import annotations
 
 import json
+import logging
 import os
 import urllib.error
 import urllib.parse
@@ -17,6 +18,9 @@ from typing import Literal
 from pydantic import BaseModel, Field
 from strands import Agent, tool
 from strands.models.anthropic import AnthropicModel
+
+log = logging.getLogger()
+log.setLevel(logging.INFO)
 
 MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-5")
 OPEN_METEO_URL = "https://api.open-meteo.com/v1/forecast"
@@ -85,6 +89,7 @@ def get_current_weather(latitude: float, longitude: float, timezone: str) -> dic
         }
     )
     request = urllib.request.Request(f"{OPEN_METEO_URL}?{query}")
+    log.info("waiting for operation to complete: Open-Meteo %s,%s", latitude, longitude)
     try:
         with urllib.request.urlopen(request, timeout=8) as response:
             payload = json.loads(response.read().decode("utf-8"))
@@ -120,6 +125,7 @@ def _run_agent(city):
         ),
         callback_handler=None,
     )
+    log.info("waiting for operation to complete: Strands agent for %s", city["city"])
     result = agent(
         (
             f"Look up the live weather for {city['city']}, {city['country']} "
@@ -144,16 +150,19 @@ def _response(status, body):
 def handler(event, context):
     params = event.get("pathParameters") or {}
     city_id = (params.get("city") or "").strip().lower()
+    log.info("starting execution city=%s request=%s", city_id, getattr(context, "aws_request_id", "-"))
     city = CITIES.get(city_id)
     if not city:
+        log.info("finished: city '%s' is not supported", city_id)
         return _response(404, {"error": f"City '{city_id}' is not supported by the weather agent"})
 
     try:
         forecast = _run_agent(city)
     except Exception as error:
-        print(f"agent error: {error}")
+        log.exception("finished: agent error")
         return _response(502, {"error": str(error)})
 
+    log.info("finished: %s %s°C", city["city"], forecast.temperatureC)
     return _response(
         200,
         {
