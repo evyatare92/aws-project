@@ -21,11 +21,13 @@ service:
   targetPort: 8080
 
 gateway:
-  # Resources are rendered only when sourceRange is set ("make alb").
+  # Resources are rendered when sourceRange (direct ALB IP lock) or
+  # securityGroupId (CloudFront prefix-list SG from "make cdn") is set.
   enabled: true
   className: aws-alb
   loadBalancerName: aws-project-dev-gw
-  sourceRange: "81.199.237.9/32"
+  sourceRange: ""
+  securityGroupId: sg-086fec0e749be52a2
   # Public subnet IDs (AZs a/b/c). Filled by "make charts-stage" from NAT stack exports.
   subnetIds: "subnet-0341dec6d1538679e,subnet-05d928b25a6f078ee,subnet-0fee9644a18a6f3a6"
   healthCheckPath: /healthz

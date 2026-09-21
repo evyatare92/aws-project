@@ -1,4 +1,4 @@
-{{- if and .Values.gateway.enabled .Values.gateway.sourceRange }}
+{{- if and .Values.gateway.enabled (or .Values.gateway.sourceRange .Values.gateway.securityGroupId) }}
 apiVersion: gateway.networking.k8s.io/v1
 kind: GatewayClass
 metadata:
@@ -18,8 +18,14 @@ spec:
   {{- with .Values.gateway.loadBalancerName }}
   loadBalancerName: {{ . | quote }}
   {{- end }}
+  {{- if .Values.gateway.securityGroupId }}
+  securityGroups:
+    - {{ .Values.gateway.securityGroupId | quote }}
+  manageBackendSecurityGroupRules: true
+  {{- else if .Values.gateway.sourceRange }}
   sourceRanges:
     - {{ .Values.gateway.sourceRange | quote }}
+  {{- end }}
   {{- if .Values.gateway.subnetIds }}
   loadBalancerSubnets:
     {{- range splitList "," .Values.gateway.subnetIds }}

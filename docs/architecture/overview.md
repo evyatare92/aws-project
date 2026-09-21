@@ -1,8 +1,8 @@
 # Architecture overview
 
-The Weather Board is a small Node.js web app on **Amazon EKS**. The UI shows several cities; each city’s **live** forecast is fetched through a different integration pattern on purpose: **ECS + Cloud Map**, **private API Gateway + agent Lambda**, **AgentCore Runtime**, and **SQS + worker Lambda + DynamoDB poll**.
+The Weather Board SPA is on **CloudFront** (S3 origin). Live forecasts still run on **Amazon EKS**: CloudFront path `/api/*` is a second origin to the Gateway ALB. Each city uses a different backend integration: **ECS + Cloud Map**, **private API Gateway + agent Lambda**, **AgentCore Runtime**, and **SQS + worker Lambda + DynamoDB poll**.
 
-Everything runs in a **private VPC** (`10.0.0.0/16`). There is no VPN and no public Kubernetes API. Operators reach the cluster through a **bastion** (SSM Session Manager). Optional **internet-facing access** to the app uses **Gateway API** and the **AWS Load Balancer Controller** (ALB → pod IPs), locked to your public IP via `make alb`.
+Everything runs in a **private VPC** (`10.0.0.0/16`) except the public edge. There is no VPN and no public Kubernetes API. Operators reach the cluster through a **bastion** (SSM Session Manager). The UI is **`make cdn`**: CloudFront + WAF (your IP) serving the SPA from S3 and proxying `/api/*` to the Gateway ALB. The ALB only accepts CloudFront. `make app-forward` still reaches pods without the CDN.
 
 ---
 
@@ -16,7 +16,9 @@ flowchart TB
     Anthropic["Anthropic API"]
   end
 
-  subgraph PublicEdge["Public edge (make alb)"]
+  subgraph PublicEdge["Public edge (make cdn)"]
+    CF["CloudFront CDN + WAF"]
+    S3Front["S3 SPA"]
     ALB["Internet-facing ALB\nGateway API"]
   end
 
@@ -30,7 +32,9 @@ flowchart TB
     NAT["NAT Gateway\nsingle AZ"]
   end
 
-  UserPC -->|"HTTP :80\nsource IP allowlist"| ALB
+  UserPC -->|"HTTPS\nWAF IP allowlist"| CF
+  CF -->|"static"| S3Front["S3 SPA"]
+  CF -->|"/api/* HTTP"| ALB
   UserPC -->|"SSM Session Manager"| Bastion
   ALB --> EKS
   Bastion --> EKS
@@ -78,7 +82,8 @@ Stacks are named `{ProjectName}-{Environment}-*` (default `aws-project-dev-*). E
 | Target | Template | Role |
 |--------|----------|------|
 | `lbc-iam` / `lbc` | `infra/61-lbc/iam.yaml` + Helm | IRSA for AWS Load Balancer Controller |
-| `alb` | Helm (main chart Gateway) | Internet-facing ALB + Gateway/HTTPRoute; sets `gateway.sourceRange` |
+| `alb` | Helm (main chart Gateway) | Internet-facing ALB + Gateway/HTTPRoute |
+| `cdn` | `infra/62-cdn/*` + S3 sync | CloudFront + WAF IP allowlist; SPA on S3; `/api/*` → ALB |
 
 Legacy **`infra/60-alb/alb.yaml`** (CloudFormation ALB + NodePort) is kept for teardown only; **Gateway** is the supported public path.
 
@@ -88,7 +93,8 @@ Legacy **`infra/60-alb/alb.yaml`** (CloudFormation ALB + NodePort) is kept for t
 
 | Path | Runtime | Purpose |
 |------|---------|---------|
-| `app/main/` | Docker → EKS | Weather Board UI + `/api/live/weather/{city}` router |
+| `app/main/web/` | S3 → CloudFront | Weather Board UI |
+| `app/main/` | Docker → EKS | `/api/live/weather/{city}` router (static files still bundled for `app-forward`) |
 | `app/weather/` | Docker → ECS Fargate | Open-Meteo proxy for **New York** |
 | `app/agent/` | Lambda (HTTP) | Strands + Claude Sonnet 4.5 for **Barcelona** |
 | `app/agentcore/` | Docker (arm64) → AgentCore Runtime | Strands + Claude Sonnet 4.5 for **Tel Aviv** |
@@ -122,9 +128,9 @@ sequenceDiagram
 - **Chart values** pull CloudFormation exports (agent URL, SQS URL, DynamoDB table, MainApp IRSA ARN, Gateway subnets when staging for `alb`).
 - **EKS API is private**; Helm and `kubectl` run on the bastion (or any host inside the VPC with credentials).
 
-Public URL after `make alb`: Gateway status address (ALB DNS name), HTTP port 80.
+Public URL after `make cdn`: `https://{CloudFront domain}` (WAF allows `CLIENT_CIDR`). The Gateway ALB is only reachable from CloudFront.
 
-Local dev tunnel without Gateway: `make app-forward` starts `kubectl port-forward` on the bastion, then SSM forwards `localhost:8080`.
+Local dev tunnel without CDN: `make app-forward` starts `kubectl port-forward` on the bastion, then SSM forwards `localhost:8080`.
 
 ---
 

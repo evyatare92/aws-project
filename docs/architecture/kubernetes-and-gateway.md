@@ -51,12 +51,14 @@ Image: ECR `{account}.dkr.ecr.{region}.amazonaws.com/{stack}/main:{version}`.
 Public HTTP is **not** `Service type: LoadBalancer`. It is:
 
 1. **GatewayClass** — `controllerName: gateway.k8s.aws/alb`
-2. **LoadBalancerConfiguration** — internet-facing ALB, `sourceRanges`, optional fixed name and subnet IDs
+2. **LoadBalancerConfiguration** — internet-facing ALB; either `sourceRanges` (direct IP lock) **or** `securityGroups` as SG ID strings (CloudFront prefix-list SG from `make cdn`), with `manageBackendSecurityGroupRules: true`
 3. **TargetGroupConfiguration** — `targetType: ip`, health check `/healthz`
 4. **Gateway** — listener HTTP :80
 5. **HTTPRoute** — `/` → Service `weather-main:80`
 
-Templates: `deploy/charts/main/templates/gateway.yaml` (rendered only when `gateway.sourceRange` is non-empty, set by `make alb` via `charts-stage`).
+Templates: `deploy/charts/main/templates/gateway.yaml` (rendered when `gateway.sourceRange` or `gateway.securityGroupId` is set).
+
+Public UI is **CloudFront** (`make cdn`): static files from S3, `/api/*` forwarded to this ALB. The browser keeps same-origin `/api/...` URLs.
 
 **Controller install** (`make lbc`):
 

@@ -52,8 +52,9 @@ COMMON_PARAMS := ProjectName=$(PROJECT) Environment=$(ENV)
 	app-login app-build version-bump app-push app-publish app-image app-push-all \
 	charts-version charts-stage \
 	app-deploy app-helm app-forward alb lbc lbc-iam lbc-stage lbc-install \
+	cdn cdn-waf cdn-infra cdn-sync \
 	destroy-registry destroy-eks destroy-ecs destroy-ecs-weather destroy-lambda destroy-agentcore \
-	destroy-bastion destroy-alb destroy-lbc destroy-network destroy-nat
+	destroy-bastion destroy-alb destroy-lbc destroy-cdn destroy-network destroy-nat
 
 # Order matters: nat adds IGW routes; endpoints need the VPC; compute needs both.
 # agentcore imports the Anthropic secret from the lambda stack and the ECR repo.
@@ -271,6 +272,13 @@ charts-version:
 		sed -i -E "s|^  sourceRange:.*|  sourceRange: \"$(CLIENT_CIDR)\"|" $(MAIN_VALUES); \
 		echo "$(MAIN_VALUES): gateway.sourceRange set to $(CLIENT_CIDR)"; \
 	fi
+	@sg=$$(aws cloudformation list-exports --region $(AWS_REGION) \
+		--query "Exports[?Name=='$(STACK_PREFIX)-FrontendAlbSecurityGroupId'].Value" --output text 2>/dev/null); \
+	if [ -n "$$sg" ] && [ "$$sg" != "None" ]; then \
+		sed -i -E "s|^  securityGroupId:.*|  securityGroupId: $$sg|" $(MAIN_VALUES); \
+		sed -i -E "s|^  sourceRange:.*|  sourceRange: \"\"|" $(MAIN_VALUES); \
+		echo "$(MAIN_VALUES): gateway.securityGroupId set to $$sg (CloudFront SG; sourceRange cleared)"; \
+	fi
 
 # The bastion has no internet route, so charts travel via the artifacts bucket.
 charts-stage: charts-version
@@ -280,7 +288,7 @@ charts-stage: charts-version
 
 # Installs the chart from the bastion, because the EKS API is private. SSM Run
 # Command is the non-interactive counterpart to "make connect".
-app-deploy: app-push charts-stage app-helm
+app-deploy: app-push charts-stage app-helm cdn-sync
 
 app-helm:
 	@test -n "$(BASTION_ID)" || { echo "No bastion found. Run 'make bastion'."; exit 1; }
@@ -368,6 +376,58 @@ alb: nat eks lbc
 	fi; \
 	echo "Deploying Gateway ALB allowed from $$cidr"; \
 	$(MAKE) --no-print-directory charts-stage app-helm CLIENT_CIDR=$$cidr
+
+# CloudFront CDN for the SPA (S3) plus /api/* to the Gateway ALB. IP allowlist
+# moves to a CLOUDFRONT WAF in us-east-1. Not part of "make all".
+cdn: alb cdn-waf cdn-infra
+	$(MAKE) --no-print-directory charts-stage app-helm
+	$(MAKE) --no-print-directory cdn-sync
+
+cdn-waf:
+	@cidr="$(CLIENT_CIDR)"; \
+	if [ -z "$$cidr" ]; then \
+		ip=$$(curl -sS https://checkip.amazonaws.com | tr -d '[:space:]'); \
+		test -n "$$ip" || { echo "Could not detect public IP. Pass CLIENT_CIDR=x.x.x.x/32"; exit 1; }; \
+		cidr="$$ip/32"; \
+	fi; \
+	echo "Deploying CloudFront WAF allowed from $$cidr"; \
+	aws cloudformation deploy --region us-east-1 \
+		--no-fail-on-empty-changeset \
+		--capabilities CAPABILITY_IAM \
+		--tags Project=$(PROJECT) Environment=$(ENV) ManagedBy=cloudformation \
+		--stack-name $(STACK_PREFIX)-cdn-waf \
+		--template-file $(INFRA)/62-cdn/waf.yaml \
+		--parameter-overrides $(COMMON_PARAMS) ClientCidr=$$cidr
+
+cdn-infra:
+	@alb=$$(aws elbv2 describe-load-balancers --region $(AWS_REGION) \
+		--query "LoadBalancers[?LoadBalancerName=='$(STACK_PREFIX)-gw'].DNSName" --output text); \
+	test -n "$$alb" && [ "$$alb" != "None" ] || { echo "No Gateway ALB named $(STACK_PREFIX)-gw. Run 'make alb'."; exit 1; }; \
+	waf=$$(aws cloudformation list-exports --region us-east-1 \
+		--query "Exports[?Name=='$(STACK_PREFIX)-FrontendWebAclArn'].Value" --output text); \
+	test -n "$$waf" && [ "$$waf" != "None" ] || { echo "No FrontendWebAclArn. Run 'make cdn-waf'."; exit 1; }; \
+	pl=$$(aws ec2 describe-managed-prefix-lists --region $(AWS_REGION) \
+		--filters Name=prefix-list-name,Values=com.amazonaws.global.cloudfront.origin-facing \
+		--query 'PrefixLists[0].PrefixListId' --output text); \
+	test -n "$$pl" && [ "$$pl" != "None" ] || { echo "CloudFront origin-facing prefix list not found in $(AWS_REGION)."; exit 1; }; \
+	echo "CloudFront origin ALB=$$alb prefix-list=$$pl"; \
+	$(DEPLOY) --stack-name $(STACK_PREFIX)-cdn \
+		--template-file $(INFRA)/62-cdn/frontend.yaml \
+		--parameter-overrides $(COMMON_PARAMS) AlbDnsName=$$alb WebAclArn=$$waf CloudFrontPrefixListId=$$pl
+
+cdn-sync:
+	@bucket=$$(aws cloudformation list-exports --region $(AWS_REGION) \
+		--query "Exports[?Name=='$(STACK_PREFIX)-FrontendBucketName'].Value" --output text); \
+	dist=$$(aws cloudformation list-exports --region $(AWS_REGION) \
+		--query "Exports[?Name=='$(STACK_PREFIX)-FrontendDistributionId'].Value" --output text); \
+	url=$$(aws cloudformation list-exports --region $(AWS_REGION) \
+		--query "Exports[?Name=='$(STACK_PREFIX)-FrontendUrl'].Value" --output text); \
+	test -n "$$bucket" && [ "$$bucket" != "None" ] || { echo "No FrontendBucketName. Run 'make cdn-infra'."; exit 1; }; \
+	aws s3 sync app/main/web s3://$$bucket --region $(AWS_REGION) --delete \
+		--cache-control "max-age=60, must-revalidate"; \
+	aws cloudfront create-invalidation --distribution-id $$dist --paths '/*' >/dev/null; \
+	echo "Published SPA to s3://$$bucket"; \
+	echo "CloudFront URL: https://$$url"
 
 lbc-iam:
 	$(DEPLOY) --stack-name $(STACK_PREFIX)-lbc \
@@ -462,7 +522,8 @@ lint:
 	cfn-lint $(INFRA)/00-bootstrap/*.yaml $(INFRA)/15-registry/*.yaml $(INFRA)/10-network/*.yaml \
 		$(INFRA)/20-eks/*.yaml $(INFRA)/30-ecs/*.yaml $(INFRA)/31-ecs/*.yaml $(INFRA)/40-lambda/*.yaml \
 		$(INFRA)/41-agentcore/*.yaml \
-		$(INFRA)/50-bastion/*.yaml $(INFRA)/60-alb/*.yaml $(INFRA)/61-lbc/*.yaml
+		$(INFRA)/50-bastion/*.yaml $(INFRA)/60-alb/*.yaml $(INFRA)/61-lbc/*.yaml \
+		$(INFRA)/62-cdn/*.yaml
 
 outputs:
 	@aws cloudformation describe-stacks --region $(AWS_REGION) \
@@ -506,6 +567,17 @@ destroy-alb:
 	aws cloudformation delete-stack --region $(AWS_REGION) --stack-name $(STACK_PREFIX)-alb
 	aws cloudformation wait stack-delete-complete --region $(AWS_REGION) --stack-name $(STACK_PREFIX)-alb
 
+destroy-cdn:
+	@bucket=$$(aws cloudformation list-exports --region $(AWS_REGION) \
+		--query "Exports[?Name=='$(STACK_PREFIX)-FrontendBucketName'].Value" --output text 2>/dev/null); \
+	if [ -n "$$bucket" ] && [ "$$bucket" != "None" ]; then \
+		aws s3 rm s3://$$bucket --recursive --region $(AWS_REGION) || true; \
+	fi
+	aws cloudformation delete-stack --region $(AWS_REGION) --stack-name $(STACK_PREFIX)-cdn || true
+	aws cloudformation wait stack-delete-complete --region $(AWS_REGION) --stack-name $(STACK_PREFIX)-cdn || true
+	aws cloudformation delete-stack --region us-east-1 --stack-name $(STACK_PREFIX)-cdn-waf || true
+	aws cloudformation wait stack-delete-complete --region us-east-1 --stack-name $(STACK_PREFIX)-cdn-waf || true
+
 # Removes Gateway objects (so the controller can delete the ALB) then the LBC
 # Helm release and its IAM role. Best-effort if the bastion is already gone.
 destroy-lbc:
@@ -530,7 +602,7 @@ destroy-lbc:
 	aws cloudformation wait stack-delete-complete --region $(AWS_REGION) --stack-name $(STACK_PREFIX)-lbc
 
 # Endpoints must go before the VPC: the VPC's exports are in use until they do.
-destroy-network: destroy-lbc destroy-alb destroy-bastion destroy-eks destroy-ecs destroy-agentcore destroy-lambda destroy-nat
+destroy-network: destroy-cdn destroy-lbc destroy-alb destroy-bastion destroy-eks destroy-ecs destroy-agentcore destroy-lambda destroy-nat
 	aws cloudformation delete-stack --region $(AWS_REGION) --stack-name $(STACK_PREFIX)-endpoints
 	aws cloudformation wait stack-delete-complete --region $(AWS_REGION) --stack-name $(STACK_PREFIX)-endpoints
 	aws cloudformation delete-stack --region $(AWS_REGION) --stack-name $(STACK_PREFIX)-vpc

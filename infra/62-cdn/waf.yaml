@@ -1,0 +1,67 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  CloudFront-scoped WAFv2 web ACL. Must be deployed in us-east-1. Allows only
+  ClientCidr so the Weather Board CDN is not world-readable.
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: aws-project
+    AllowedPattern: '^[a-z0-9][a-z0-9-]{1,30}[a-z0-9]$'
+
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues: [dev, staging, prod]
+
+  ClientCidr:
+    Type: String
+    Description: IPv4 CIDR allowed to load the CloudFront distribution (typically x.x.x.x/32).
+    AllowedPattern: '^(\d{1,3}\.){3}\d{1,3}/\d{1,2}$'
+
+Resources:
+  AllowList:
+    Type: AWS::WAFv2::IPSet
+    Properties:
+      Name: !Sub '${ProjectName}-${Environment}-frontend'
+      Scope: CLOUDFRONT
+      IPAddressVersion: IPV4
+      Addresses:
+        - !Ref ClientCidr
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-frontend'
+
+  WebAcl:
+    Type: AWS::WAFv2::WebACL
+    Properties:
+      Name: !Sub '${ProjectName}-${Environment}-frontend'
+      Scope: CLOUDFRONT
+      Description: IP allowlist for the Weather Board CloudFront distribution
+      DefaultAction:
+        Block: {}
+      VisibilityConfig:
+        SampledRequestsEnabled: true
+        CloudWatchMetricsEnabled: true
+        MetricName: !Sub '${ProjectName}-${Environment}-frontend'
+      Rules:
+        - Name: allow-client-ip
+          Priority: 0
+          Action:
+            Allow: {}
+          Statement:
+            IPSetReferenceStatement:
+              Arn: !GetAtt AllowList.Arn
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: allow-client-ip
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-frontend'
+
+Outputs:
+  WebAclArn:
+    Value: !GetAtt WebAcl.Arn
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-FrontendWebAclArn'

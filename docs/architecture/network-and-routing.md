@@ -115,24 +115,33 @@ flowchart LR
 
 ---
 
-## Public access path (Gateway ALB)
+## Public access path (CloudFront + Gateway ALB)
 
-Not part of the base VPC template. Activated by **`make nat`** then **`make alb`**.
+Not part of the base VPC template. Activated by **`make nat`**, **`make alb`**, then **`make cdn`**.
 
 ```mermaid
 flowchart LR
   User["Client\n(your IP /32)"]
+  CF["CloudFront + WAF"]
+  S3["S3 SPA"]
   ALB["ALB\naws-project-dev-gw"]
   TG["Target group\ntargetType: ip"]
   Pod["Pod :8080"]
 
-  User -->|"HTTP 80\nSG: sourceRanges"| ALB
+  User -->|"HTTPS"| CF
+  CF --> S3
+  CF -->|"/api/*"| ALB
   ALB --> TG --> Pod
 ```
 
-- **LoadBalancerConfiguration** (`scheme: internet-facing`, `sourceRanges`) creates an ALB security group that only allows your CIDR on listener ports.
-- **TargetGroupConfiguration** (`targetType: ip`) registers **pod IPs** in the target group (port 8080). This requires ALB subnets in **every AZ where pods run** — hence three public subnets (a, b, c) and explicit `loadBalancerSubnets` in the Helm chart.
-- In-cluster Service type is **ClusterIP**; the ALB never uses NodePort.
+- **CloudFront** default origin is the private S3 bucket (OAC). Path `/api/*` is a custom HTTP origin to the Gateway ALB (origin read timeout 60s for AgentCore).
+- **WAF** (CLOUDFRONT, us-east-1) allows only `CLIENT_CIDR`.
+- **ALB security group** (from the cdn stack) allows TCP 80 only from the CloudFront origin-facing prefix list. Direct browser hits to the ALB are dropped.
+- **LoadBalancerConfiguration** uses that security group when `gateway.securityGroupId` is set (`make cdn` / `charts-stage`). The CRD wants SG **IDs as strings** (`securityGroups: ["sg-…"]`), not `{identifier: …}` objects (those are only for `loadBalancerSubnets`). `manageBackendSecurityGroupRules: true` keeps IP-mode pod SGs open from the ALB. Without CDN, `make alb` still uses `sourceRanges` for your `/32`.
+- **TargetGroupConfiguration** (`targetType: ip`) registers **pod IPs** (port 8080). ALB subnets in every AZ where pods run.
+- In-cluster Service type is **ClusterIP**.
+
+Republish the SPA with `make cdn-sync` after UI changes (S3 sync + CloudFront invalidation). Helm/image deploy is still `make app-deploy` for API changes.
 
 ---
 
@@ -158,7 +167,7 @@ Cloud Map is **private DNS inside the VPC**; your laptop cannot resolve it witho
 | Bastion SG | Bastion EC2 | Egress; ingress none (SSM outbound-only model) |
 | Lambda SG | Lambda ENIs | Egress all (NAT for Open-Meteo / Anthropic) |
 | Endpoint SG | VPCE ENIs | :443 from VPC CIDR |
-| LBC-managed ALB SG | Gateway ALB | :80 from `sourceRanges` only |
+| LBC-managed or cdn SG | Gateway ALB | :80 from `sourceRanges` (alb) or CloudFront prefix list (`make cdn`) |
 
 ---
 

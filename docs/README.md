@@ -5,7 +5,7 @@ This folder describes how the **aws-project** Weather Board is built and how tra
 | Document | Contents |
 |----------|----------|
 | [architecture/overview.md](architecture/overview.md) | System context, CloudFormation stacks, deployment model, main diagrams |
-| [architecture/network-and-routing.md](architecture/network-and-routing.md) | VPC layout, subnets, route tables, NAT, VPC endpoints, public Gateway ALB |
+| [architecture/network-and-routing.md](architecture/network-and-routing.md) | VPC layout, subnets, route tables, NAT, VPC endpoints, CloudFront + Gateway ALB |
 | [architecture/kubernetes-and-gateway.md](architecture/kubernetes-and-gateway.md) | EKS, Helm, IRSA, Gateway API, AWS Load Balancer Controller |
 | [architecture/weather-backends.md](architecture/weather-backends.md) | Per-city backends (ECS, agent Lambda, AgentCore, SQS Lambda), API contracts, sequence flows |
 | [architecture/iam-and-access.md](architecture/iam-and-access.md) | IAM roles, who assumes what, bastion and operator access |

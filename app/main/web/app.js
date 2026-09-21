@@ -1,4 +1,5 @@
 const ENDPOINT = "/api/weather";
+// Same-origin on purpose: CloudFront serves this file and proxies /api/* to EKS.
 const CITY_SOURCES = {
   "new-york": "ecs",
   barcelona: "agent",
@@ -162,9 +163,9 @@ async function loadCityEntry(cityId) {
     return { entry: fallback, live: false };
   }
 
-  // Same-origin call into this app's own backend, which forwards it to ECS
-  // (New York), the Lambda weather agent (Barcelona), AgentCore (Tel Aviv),
-  // or SQS (Bangkok/Tokyo).
+  // Same-origin call into this app's own backend (CloudFront /api → EKS, or
+  // port-forward). Forwards to ECS (New York), the Lambda agent (Barcelona),
+  // AgentCore (Tel Aviv), or SQS (Bangkok/Tokyo).
   const startedAt = performance.now();
   const response = await fetch(`/api/live/weather/${cityId}`, { cache: "no-store" });
   const elapsedMs = Math.round(performance.now() - startedAt);
