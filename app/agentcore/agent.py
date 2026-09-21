@@ -1,8 +1,7 @@
 """Tel Aviv weather agent for Amazon Bedrock AgentCore Runtime.
 
-Same Strands + Claude + Open-Meteo loop as the Barcelona Lambda agent, hosted
-on AgentCore instead of a cloud function. The runtime contract is POST
-/invocations and GET /ping on port 8080 (provided by BedrockAgentCoreApp).
+Instructions live in skills/tel-aviv-weather/SKILL.md (Agent Skills format).
+The runtime contract is POST /invocations and GET /ping on port 8080.
 """
 
 from __future__ import annotations
@@ -13,6 +12,7 @@ import os
 import urllib.error
 import urllib.parse
 import urllib.request
+from pathlib import Path
 from typing import Literal
 
 from bedrock_agentcore.runtime import BedrockAgentCoreApp
@@ -25,6 +25,18 @@ log.setLevel(logging.INFO)
 
 MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-5")
 OPEN_METEO_URL = "https://api.open-meteo.com/v1/forecast"
+SKILL_DIR = Path(__file__).resolve().parent / "skills" / "tel-aviv-weather"
+
+CITIES = {
+    "tel-aviv": {
+        "id": "tel-aviv",
+        "city": "Tel Aviv",
+        "country": "Israel",
+        "timezone": "Asia/Jerusalem",
+        "latitude": 32.0853,
+        "longitude": 34.7818,
+    },
+}
 
 CITIES = {
     "tel-aviv": {
@@ -112,7 +124,33 @@ def get_current_weather(latitude: float, longitude: float, timezone: str) -> dic
     }
 
 
+def _skill_instructions():
+    skill_md = SKILL_DIR / "SKILL.md"
+    if not skill_md.is_file():
+        raise RuntimeError(f"Missing skill file {skill_md}")
+
+    try:
+        from strands.vended_plugins.skills import Skill
+
+        return Skill.from_file(SKILL_DIR).instructions
+    except Exception:
+        text = skill_md.read_text(encoding="utf-8")
+        parts = text.split("---", 2)
+        return parts[2].strip() if len(parts) >= 3 else text.strip()
+
+
+def _skill_plugins():
+    try:
+        from strands.vended_plugins.skills import AgentSkills
+
+        return [AgentSkills(skills=str(SKILL_DIR), strict=True)]
+    except Exception:
+        log.warning("AgentSkills plugin unavailable; using SKILL.md as system prompt only")
+        return []
+
+
 def _run_agent(city):
+    instructions = _skill_instructions()
     agent = Agent(
         model=AnthropicModel(
             client_args={"api_key": _anthropic_key()},
@@ -121,16 +159,15 @@ def _run_agent(city):
             params={"temperature": 0},
         ),
         tools=[get_current_weather],
-        system_prompt=(
-            "You are a weather agent. Call get_current_weather with the city's "
-            "coordinates, then return a structured forecast. Never invent observations."
-        ),
+        plugins=_skill_plugins(),
+        system_prompt=instructions,
         callback_handler=None,
     )
     log.info("waiting for operation to complete: Strands agent for %s", city["city"])
     result = agent(
         (
-            f"Look up the live weather for {city['city']}, {city['country']} "
+            f"Use the tel-aviv-weather skill. Look up live weather for "
+            f"{city['city']}, {city['country']} "
             f"(timezone {city['timezone']}, {city['latitude']}, {city['longitude']})."
         ),
         structured_output_model=Forecast,

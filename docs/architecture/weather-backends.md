@@ -101,8 +101,8 @@ Response includes `source: "lambda-agent"` and `model` for display/debug.
 
 **AgentCore Runtime** (`infra/41-agentcore/runtime.yaml`, code in `app/agentcore/`):
 
-- Strands agent with **Anthropic Claude Sonnet 4.5**, same tool (`get_current_weather` → Open-Meteo) as Barcelona
-- Hosted by **Amazon Bedrock AgentCore** (linux/arm64 container in ECR), not Lambda
+- Strands agent with **Anthropic Claude Sonnet 4.5**; job instructions in `app/agentcore/skills/tel-aviv-weather/SKILL.md`
+- Tool `get_current_weather` → Open-Meteo; same as Barcelona, hosted by **Amazon Bedrock AgentCore** (linux/arm64 container in ECR), not Lambda
 - **VPC mode**: ENIs in app subnets; egress via NAT; secret from Secrets Manager
 - Main app calls **`InvokeAgentRuntime`** (IRSA), payload `{ "cityId": "tel-aviv" }`
 - HTTP contract inside the runtime is `POST /invocations` + `GET /ping` (AgentCore SDK)
