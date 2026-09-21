@@ -1,6 +1,6 @@
 # Architecture overview
 
-The Weather Board is a small Node.js web app on **Amazon EKS**. The UI shows several cities; each city’s **live** forecast is fetched through a different integration pattern on purpose: **ECS + Cloud Map**, **private API Gateway + agent Lambda**, and **SQS + worker Lambda + DynamoDB poll**.
+The Weather Board is a small Node.js web app on **Amazon EKS**. The UI shows several cities; each city’s **live** forecast is fetched through a different integration pattern on purpose: **ECS + Cloud Map**, **private API Gateway + agent Lambda**, **AgentCore Runtime**, and **SQS + worker Lambda + DynamoDB poll**.
 
 Everything runs in a **private VPC** (`10.0.0.0/16`). There is no VPN and no public Kubernetes API. Operators reach the cluster through a **bastion** (SSM Session Manager). Optional **internet-facing access** to the app uses **Gateway API** and the **AWS Load Balancer Controller** (ALB → pod IPs), locked to your public IP via `make alb`.
 
@@ -24,6 +24,7 @@ flowchart TB
     Bastion["Bastion EC2\nSSM only"]
     EKS["EKS cluster\nprivate API"]
     ECS["ECS Fargate\nweather service"]
+    AgentCore["AgentCore Runtime\nTel Aviv agent"]
     LambdaVPC["Lambda ENIs"]
     VPCE["VPC endpoints\nAWS APIs"]
     NAT["NAT Gateway\nsingle AZ"]
@@ -41,11 +42,14 @@ flowchart TB
   EKS --> Pods
   Pods -->|"HTTP Cloud Map"| ECS
   Pods -->|"HTTPS execute-api\n(via VPC endpoint)"| LambdaVPC
+  Pods -->|"InvokeAgentRuntime\n(via VPC endpoint)"| AgentCore
   Pods -->|"SQS + DynamoDB\n(IRSA)"| VPCE
 
   ECS --> NAT --> OpenMeteo
-  LambdaVPC --> NAT --> OpenMeteo
-  LambdaVPC --> NAT --> Anthropic
+  AgentCore --> NAT
+  NAT --> OpenMeteo
+  NAT --> Anthropic
+  LambdaVPC --> NAT
   Pods --> NAT
 ```
 
@@ -58,7 +62,7 @@ Stacks are named `{ProjectName}-{Environment}-*` (default `aws-project-dev-*). E
 | Order | Makefile target | Stack / template | Role |
 |------:|-------------------|------------------|------|
 | 1 | `bootstrap` | `infra/00-bootstrap/artifacts.yaml` | S3 artifacts bucket (Helm charts, Lambda zips, bastion tools) |
-| 2 | `registry` | `infra/15-registry/ecr.yaml` | ECR repos for `main` and `weather` images |
+| 2 | `registry` | `infra/15-registry/ecr.yaml` | ECR repos for `main`, `weather`, and `agentcore` images |
 | 3 | `network` | `infra/10-network/vpc.yaml` | VPC, app/data/endpoint subnets, route tables (no IGW yet) |
 | 4 | `nat` | `infra/10-network/nat.yaml` | IGW, **one NAT per AZ**, public subnets for Gateway ALB |
 | 5 | `endpoints` | `infra/10-network/endpoints.yaml` | S3/DynamoDB gateway + interface endpoints (SSM, ECR, EKS, …); default **multi-AZ** |
@@ -66,7 +70,8 @@ Stacks are named `{ProjectName}-{Environment}-*` (default `aws-project-dev-*). E
 | 7 | `ecs` | `infra/30-ecs/cluster.yaml` | ECS cluster + task roles |
 | 8 | `ecs-weather` | `infra/31-ecs/weather-service.yaml` | Fargate weather API (2 tasks, AZ spread) + Cloud Map |
 | 9 | `lambda` | `infra/40-lambda/functions.yaml` | Agent + SQS Lambdas, private API Gateway, SQS, DynamoDB, **MainAppRole** (IRSA) |
-| 10 | `bastion` | `infra/50-bastion/bastion.yaml` | SSM bastion, EKS access entry |
+| 10 | `agentcore` | `infra/41-agentcore/runtime.yaml` | Bedrock AgentCore Runtime (Tel Aviv Strands agent, VPC) |
+| 11 | `bastion` | `infra/50-bastion/bastion.yaml` | SSM bastion, EKS access entry |
 
 **Not in `make all` (opt-in):**
 
@@ -86,6 +91,7 @@ Legacy **`infra/60-alb/alb.yaml`** (CloudFormation ALB + NodePort) is kept for t
 | `app/main/` | Docker → EKS | Weather Board UI + `/api/live/weather/{city}` router |
 | `app/weather/` | Docker → ECS Fargate | Open-Meteo proxy for **New York** |
 | `app/agent/` | Lambda (HTTP) | Strands + Claude Sonnet 4.5 for **Barcelona** |
+| `app/agentcore/` | Docker (arm64) → AgentCore Runtime | Strands + Claude Sonnet 4.5 for **Tel Aviv** |
 | `app/sqs-weather/` | Lambda (SQS) | Open-Meteo for **Bangkok** / **Tokyo**; results via DynamoDB |
 
 Helm chart: `deploy/charts/main/` (release `weather-main`, namespace `weather`).
@@ -128,6 +134,7 @@ Local dev tunnel without Gateway: `make app-forward` starts `kubectl port-forwar
 |------|-------------|-------------|
 | New York | `ecs` | HTTP to `http://weather.{stack}.local:8080/weather/new-york` |
 | Barcelona | `agent` | GET `{AgentApiUrl}/weather/barcelona` (private API Gateway) |
+| Tel Aviv | `agentcore` | `InvokeAgentRuntime` on AgentCore Runtime ARN |
 | Bangkok, Tokyo | `sqs` | SQS message + poll DynamoDB by `requestId` |
 
 Static placeholder data for all cities: `GET /api/weather` → bundled `web/data/weather.json`.

@@ -25,6 +25,7 @@ Typical flow: deploy from laptop → **SSM Run Command** on bastion for Helm →
 - **Permissions:**
   - `sqs:SendMessage` on work queue
   - `dynamodb:GetItem` on weather results table
+  - `bedrock-agentcore:InvokeAgentRuntime` on the Tel Aviv runtime (attached by the agentcore stack)
 - **Used by:** Helm `ServiceAccount` annotation `eks.amazonaws.com/role-arn`
 
 Why IRSA exists: node IMDS hop limit is 1, so the Node app cannot use the worker node's IAM role for SQS/DynamoDB.
@@ -48,6 +49,19 @@ From `infra/30-ecs/cluster.yaml`:
 | **Task role** | Runtime AWS API access for weather task (minimal; weather service uses HTTP egress only) |
 
 Weather Fargate tasks have **no public IP**; outbound internet via NAT for Open-Meteo.
+
+---
+
+## AgentCore Runtime role
+
+From `infra/41-agentcore/runtime.yaml`:
+
+| Role | Purpose |
+|------|---------|
+| **AgentCore execution role** | Assumed by `bedrock-agentcore.amazonaws.com`. Pulls the arm64 image from ECR, writes logs, reads the Anthropic secret. |
+| **MainAppInvokePolicy** | Extra policy on **MainAppRole**: `bedrock-agentcore:InvokeAgentRuntime` on this runtime only. |
+
+The runtime uses **VPC** networking (app subnets). It is not a Lambda.
 
 ---
 
@@ -97,7 +111,7 @@ Not IAM — **security group + LoadBalancerConfiguration**:
 
 | Secret | Storage | Consumers |
 |--------|---------|-----------|
-| Anthropic API key | Secrets Manager (optional CFN param on first deploy) | Agent Lambda |
+| Anthropic API key | Secrets Manager (optional CFN param on first deploy) | Agent Lambda, AgentCore Runtime |
 
 Do not commit API keys; pass `ANTHROPIC_API_KEY=...` on `make lambda` when bootstrapping the secret.
 
@@ -117,7 +131,7 @@ flowchart TB
     LBCSA["SA aws-load-balancer-controller"]
   end
 
-  MainRole["MainAppRole\nSQS + DDB read"]
+  MainRole["MainAppRole\nSQS + DDB + AgentCore"]
   LBCRole["LBC role\nELB + EC2 SG"]
   MainSA --> MainRole
   LBCSA --> LBCRole
@@ -134,4 +148,5 @@ flowchart TB
   SqsR --> DDB["DynamoDB write"]
   MainRole --> SQS["SQS send"]
   MainRole --> DDB2["DynamoDB read"]
+  MainRole --> AgentCoreAPI["InvokeAgentRuntime"]
 ```

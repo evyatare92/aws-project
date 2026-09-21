@@ -1,0 +1,183 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  Amazon Bedrock AgentCore Runtime for the Tel Aviv Strands weather agent.
+  VPC-attached so the container reaches Secrets Manager, Open-Meteo, and
+  Anthropic through existing NAT and endpoints. Invoked from the main app via
+  IRSA (InvokeAgentRuntime), not HTTP.
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: aws-project
+    AllowedPattern: '^[a-z0-9][a-z0-9-]{1,30}[a-z0-9]$'
+
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues: [dev, staging, prod]
+
+  ImageTag:
+    Type: String
+    Default: '1.0.0'
+    Description: ECR tag of the linux/arm64 agentcore image. Must already exist.
+
+Resources:
+  AgentCoreSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !Sub 'AgentCore Runtime ENIs for ${ProjectName}-${Environment}'
+      VpcId: !ImportValue
+        'Fn::Sub': '${ProjectName}-${Environment}-VpcId'
+      SecurityGroupEgress:
+        - IpProtocol: '-1'
+          CidrIp: 0.0.0.0/0
+          Description: All outbound traffic
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-agentcore'
+
+  AgentCoreExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectName}-${Environment}-agentcore'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AssumeRolePolicy
+            Effect: Allow
+            Principal:
+              Service: bedrock-agentcore.amazonaws.com
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+              ArnLike:
+                aws:SourceArn: !Sub 'arn:${AWS::Partition}:bedrock-agentcore:${AWS::Region}:${AWS::AccountId}:*'
+      Policies:
+        - PolicyName: agentcore-runtime
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: ECRImageAccess
+                Effect: Allow
+                Action:
+                  - ecr:BatchGetImage
+                  - ecr:GetDownloadUrlForLayer
+                  - ecr:BatchCheckLayerAvailability
+                Resource: !Sub 'arn:${AWS::Partition}:ecr:${AWS::Region}:${AWS::AccountId}:repository/${ProjectName}-${Environment}/agentcore'
+              - Sid: ECRTokenAccess
+                Effect: Allow
+                Action:
+                  - ecr:GetAuthorizationToken
+                Resource: '*'
+              - Sid: CloudWatchLogs
+                Effect: Allow
+                Action:
+                  - logs:DescribeLogStreams
+                  - logs:CreateLogGroup
+                  - logs:DescribeLogGroups
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: '*'
+              - Sid: XRayTracing
+                Effect: Allow
+                Action:
+                  - xray:PutTraceSegments
+                  - xray:PutTelemetryRecords
+                  - xray:GetSamplingRules
+                  - xray:GetSamplingTargets
+                Resource: '*'
+              - Sid: CloudWatchMetrics
+                Effect: Allow
+                Action: cloudwatch:PutMetricData
+                Resource: '*'
+                Condition:
+                  StringEquals:
+                    cloudwatch:namespace: bedrock-agentcore
+              - Sid: GetAgentAccessToken
+                Effect: Allow
+                Action:
+                  - bedrock-agentcore:GetWorkloadAccessToken
+                  - bedrock-agentcore:GetWorkloadAccessTokenForJWT
+                  - bedrock-agentcore:GetWorkloadAccessTokenForUserId
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:bedrock-agentcore:${AWS::Region}:${AWS::AccountId}:workload-identity-directory/default'
+                  - !Sub 'arn:${AWS::Partition}:bedrock-agentcore:${AWS::Region}:${AWS::AccountId}:workload-identity-directory/default/workload-identity/*'
+              - Sid: ReadAnthropicSecret
+                Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                  - secretsmanager:DescribeSecret
+                Resource: !ImportValue
+                  'Fn::Sub': '${ProjectName}-${Environment}-AnthropicSecretArn'
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-agentcore'
+
+  AgentRuntime:
+    Type: AWS::BedrockAgentCore::Runtime
+    Properties:
+      AgentRuntimeName: !Join
+        - '_'
+        - !Split
+          - '-'
+          - !Sub '${ProjectName}-${Environment}-telaviv'
+      Description: Strands weather agent for Tel Aviv
+      RoleArn: !GetAtt AgentCoreExecutionRole.Arn
+      ProtocolConfiguration: HTTP
+      NetworkConfiguration:
+        NetworkMode: VPC
+        NetworkModeConfig:
+          Subnets: !Split
+            - ','
+            - !ImportValue
+              'Fn::Sub': '${ProjectName}-${Environment}-AppSubnetIds'
+          SecurityGroups:
+            - !Ref AgentCoreSecurityGroup
+      AgentRuntimeArtifact:
+        ContainerConfiguration:
+          ContainerUri: !Sub '${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${ProjectName}-${Environment}/agentcore:${ImageTag}'
+      EnvironmentVariables:
+        ANTHROPIC_SECRET_ARN: !ImportValue
+          'Fn::Sub': '${ProjectName}-${Environment}-AnthropicSecretArn'
+        ANTHROPIC_MODEL: claude-sonnet-4-5
+        AWS_DEFAULT_REGION: !Ref AWS::Region
+      Tags:
+        Name: !Sub '${ProjectName}-${Environment}-telaviv'
+        Project: !Ref ProjectName
+        Environment: !Ref Environment
+
+  MainAppInvokePolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: !Sub '${ProjectName}-${Environment}-invoke-agentcore'
+      Roles:
+        - !Sub '${ProjectName}-${Environment}-main-app'
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: InvokeTelAvivAgent
+            Effect: Allow
+            Action:
+              - bedrock-agentcore:InvokeAgentRuntime
+            Resource:
+              - !GetAtt AgentRuntime.AgentRuntimeArn
+              - !Sub
+                - '${Arn}/*'
+                - Arn: !GetAtt AgentRuntime.AgentRuntimeArn
+
+Outputs:
+  AgentRuntimeArn:
+    Value: !GetAtt AgentRuntime.AgentRuntimeArn
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-AgentCoreRuntimeArn'
+
+  AgentRuntimeId:
+    Value: !GetAtt AgentRuntime.AgentRuntimeId
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-AgentCoreRuntimeId'
+
+  AgentCoreExecutionRoleArn:
+    Value: !GetAtt AgentCoreExecutionRole.Arn
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-AgentCoreExecutionRoleArn'

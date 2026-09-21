@@ -4,7 +4,7 @@ image:
   repository: 034971967415.dkr.ecr.eu-west-1.amazonaws.com/aws-project-dev/main
   # Rewritten by "make charts-stage" from app/main/.version. Do not set this to
   # a mutable tag like "latest": nodes that already cached it never pull again.
-  tag: "1.2.4"
+  tag: "1.2.5"
   pullPolicy: IfNotPresent
 
 serviceAccount:
@@ -87,6 +87,11 @@ agent:
   # Private API Gateway invoke URL (stage only, no /weather path). Filled in by
   # "make charts-stage" from the aws-project-dev-AgentApiUrl export.
   serviceUrl: https://19vuy25gvg.execute-api.eu-west-1.amazonaws.com/v1
+
+agentcore:
+  # AgentCore Runtime ARN for Tel Aviv. Filled in by "make charts-stage" from
+  # the aws-project-dev-AgentCoreRuntimeArn export.
+  runtimeArn: arn:aws:bedrock-agentcore:eu-west-1:034971967415:runtime/aws_project_dev_telaviv-sXbc613gi2
 
 queue:
   # Work queue + DynamoDB results table for Bangkok/Tokyo. Filled in by

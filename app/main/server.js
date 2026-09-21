@@ -5,6 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { SQSClient, SendMessageCommand } from "@aws-sdk/client-sqs";
 import { DynamoDBClient, GetItemCommand } from "@aws-sdk/client-dynamodb";
+import { BedrockAgentCoreClient, InvokeAgentRuntimeCommand } from "@aws-sdk/client-bedrock-agentcore";
 
 const PORT = Number(process.env.PORT || 8080);
 // Cloud Map name of the ECS weather service, injected by the Helm chart.
@@ -13,6 +14,8 @@ const WEATHER_TIMEOUT_MS = Number(process.env.WEATHER_TIMEOUT_MS || 10000);
 // Private API Gateway invoke URL (no path), injected by the Helm chart.
 const AGENT_SERVICE_URL = process.env.AGENT_SERVICE_URL || "";
 const AGENT_TIMEOUT_MS = Number(process.env.AGENT_TIMEOUT_MS || 25000);
+const AGENTCORE_RUNTIME_ARN = process.env.AGENTCORE_RUNTIME_ARN || "";
+const AGENTCORE_TIMEOUT_MS = Number(process.env.AGENTCORE_TIMEOUT_MS || 45000);
 const WEATHER_QUEUE_URL = process.env.WEATHER_QUEUE_URL || "";
 const WEATHER_RESULTS_TABLE = process.env.WEATHER_RESULTS_TABLE || "";
 const SQS_TIMEOUT_MS = Number(process.env.SQS_TIMEOUT_MS || 20000);
@@ -21,12 +24,14 @@ const AWS_REGION = process.env.AWS_REGION || process.env.AWS_DEFAULT_REGION || "
 const CITY_BACKENDS = {
   "new-york": "ecs",
   barcelona: "agent",
+  "tel-aviv": "agentcore",
   bangkok: "sqs",
   tokyo: "sqs",
 };
 
 const sqs = new SQSClient({ region: AWS_REGION });
 const dynamodb = new DynamoDBClient({ region: AWS_REGION });
+const agentcore = new BedrockAgentCoreClient({ region: AWS_REGION });
 
 const WEB_ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "web");
 
@@ -115,6 +120,10 @@ async function fetchLive(cityId) {
     return fetchViaSqs(cityId);
   }
 
+  if (backend === "agentcore") {
+    return fetchViaAgentcore(cityId);
+  }
+
   return { status: 404, body: { error: `City '${cityId}' has no live backend` } };
 }
 
@@ -171,6 +180,46 @@ async function fetchViaSqs(cityId) {
   return { status: 504, body: { error: "Timed out waiting for the SQS weather function" } };
 }
 
+async function fetchViaAgentcore(cityId) {
+  if (!AGENTCORE_RUNTIME_ARN) {
+    return { status: 503, body: { error: "AGENTCORE_RUNTIME_ARN is not configured" } };
+  }
+
+  try {
+    const response = await agentcore.send(
+      new InvokeAgentRuntimeCommand({
+        agentRuntimeArn: AGENTCORE_RUNTIME_ARN,
+        qualifier: "DEFAULT",
+        runtimeSessionId: randomUUID(),
+        contentType: "application/json",
+        accept: "application/json",
+        payload: new TextEncoder().encode(JSON.stringify({ cityId })),
+      }),
+      { abortSignal: AbortSignal.timeout(AGENTCORE_TIMEOUT_MS) },
+    );
+    const text = await response.response?.transformToString();
+    if (!text) {
+      return { status: 502, body: { error: "AgentCore returned an empty body" } };
+    }
+    let body;
+    try {
+      body = JSON.parse(text);
+    } catch {
+      return { status: 502, body: { error: "AgentCore returned invalid JSON" } };
+    }
+    if (body && typeof body === "object" && body.error) {
+      return { status: 502, body };
+    }
+    return { status: 200, body };
+  } catch (error) {
+    const timedOut = error.name === "TimeoutError" || error.name === "AbortError";
+    return {
+      status: timedOut ? 504 : 502,
+      body: { error: `Weather AgentCore unreachable: ${error.message}` },
+    };
+  }
+}
+
 const server = http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url, "http://127.0.0.1");
@@ -206,6 +255,6 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(PORT, () => {
   console.log(
-    `main app listening on ${PORT}, weather=${WEATHER_SERVICE_URL || "unset"} agent=${AGENT_SERVICE_URL || "unset"} queue=${WEATHER_QUEUE_URL || "unset"}`,
+    `main app listening on ${PORT}, weather=${WEATHER_SERVICE_URL || "unset"} agent=${AGENT_SERVICE_URL || "unset"} agentcore=${AGENTCORE_RUNTIME_ARN || "unset"} queue=${WEATHER_QUEUE_URL || "unset"}`,
   );
 });

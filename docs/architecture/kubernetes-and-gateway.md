@@ -31,13 +31,14 @@ Helm chart: `deploy/charts/main/`.
 | Release | `weather-main` |
 | Deployment | 2 replicas, **hard** topology spread (one pod per node and per AZ when possible); **PDB** `minAvailable: 1` |
 | Service | **ClusterIP**, port 80 → container 8080 |
-| ServiceAccount | IRSA → `MainAppRole` (SQS + DynamoDB) |
+| ServiceAccount | IRSA → `MainAppRole` (SQS + DynamoDB + AgentCore invoke) |
 | Probes | `GET /healthz` |
 
 Environment (from chart values / `make charts-stage`):
 
 - `WEATHER_SERVICE_URL` — ECS Cloud Map base URL
 - `AGENT_SERVICE_URL` — private API Gateway stage URL
+- `AGENTCORE_RUNTIME_ARN` — Tel Aviv AgentCore Runtime ARN
 - `WEATHER_QUEUE_URL`, `WEATHER_RESULTS_TABLE` — async cities
 - `AWS_REGION`
 

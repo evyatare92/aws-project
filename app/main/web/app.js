@@ -2,6 +2,7 @@ const ENDPOINT = "/api/weather";
 const CITY_SOURCES = {
   "new-york": "ecs",
   barcelona: "agent",
+  "tel-aviv": "agentcore",
   bangkok: "sqs",
   tokyo: "sqs",
 };
@@ -16,6 +17,11 @@ const SOURCE_COPY = {
     pending: "Lambda weather agent",
     toast: "Data received from Lambda agent",
     note: "Live data from the Lambda weather agent (Claude Sonnet 4.5 + Open-Meteo).",
+  },
+  agentcore: {
+    pending: "AgentCore weather agent",
+    toast: "Data received from AgentCore",
+    note: "Live data from the AgentCore Strands agent (Claude Sonnet 4.5 + Open-Meteo).",
   },
   sqs: {
     pending: "SQS weather Lambda",
@@ -152,7 +158,8 @@ async function loadCityEntry(cityId) {
   }
 
   // Same-origin call into this app's own backend, which forwards it to ECS
-  // (New York), the Lambda weather agent (Barcelona), or SQS (Bangkok/Tokyo).
+  // (New York), the Lambda weather agent (Barcelona), AgentCore (Tel Aviv),
+  // or SQS (Bangkok/Tokyo).
   const startedAt = performance.now();
   const response = await fetch(`/api/live/weather/${cityId}`, { cache: "no-store" });
   const elapsedMs = Math.round(performance.now() - startedAt);

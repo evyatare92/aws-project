@@ -107,6 +107,7 @@ flowchart LR
 | ecs | ECS control plane |
 | secretsmanager | Agent Lambda Anthropic secret |
 | **execute-api** | **Private** API Gateway invoke URL from inside VPC |
+| **bedrock-agentcore** | **InvokeAgentRuntime** from main app pods (Tel Aviv) |
 | lambda | Lambda control plane |
 | sqs | Main app sends messages (can also use NAT) |
 
@@ -141,6 +142,7 @@ flowchart LR
 |------|-------------|-----------|
 | `weather.{ProjectName}-{Environment}.local` | ECS task IPs (Cloud Map) | Main app pods (`WEATHER_SERVICE_URL`) |
 | `{api-id}.execute-api.{region}.amazonaws.com` | Private API Gateway (via **execute-api** endpoint DNS) | Main app pods (`AGENT_SERVICE_URL`) |
+| `bedrock-agentcore.{region}.amazonaws.com` | AgentCore data plane (via **bedrock-agentcore** endpoint) | Main app pods (`InvokeAgentRuntime`) |
 | Kubernetes Service `weather-main.weather.svc` | ClusterIP | In-cluster only; HTTPRoute backend |
 
 Cloud Map is **private DNS inside the VPC**; your laptop cannot resolve it without being in the VPC (use Gateway URL or `app-forward`).

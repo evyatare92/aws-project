@@ -17,7 +17,8 @@ STACK_PREFIX := $(PROJECT)-$(ENV)
 
 # Container apps: source in app/<name>/, ECR repo $(STACK_PREFIX)/<name>.
 # Add a name here and a matching repository in infra/15-registry/ecr.yaml.
-APPS := main weather
+# agentcore is linux/arm64 (Amazon Bedrock AgentCore Runtime).
+APPS := main weather agentcore
 APP  ?= main
 
 CHART_DIR  := deploy/charts
@@ -46,14 +47,17 @@ DEPLOY := aws cloudformation deploy --region $(AWS_REGION) \
 
 COMMON_PARAMS := ProjectName=$(PROJECT) Environment=$(ENV)
 
-.PHONY: all bootstrap registry network endpoints eks ecs lambda lambda-agent-package lambda-sqs-package bastion bastion-tools connect lint outputs \
+.PHONY: all bootstrap registry network endpoints eks ecs lambda lambda-agent-package lambda-sqs-package \
+	agentcore bastion bastion-tools connect lint outputs \
 	app-login app-build version-bump app-push app-publish app-image app-push-all \
 	charts-version charts-stage \
 	app-deploy app-helm app-forward alb lbc lbc-iam lbc-stage lbc-install \
-	destroy-registry destroy-eks destroy-ecs destroy-ecs-weather destroy-lambda destroy-bastion destroy-alb destroy-lbc destroy-network destroy-nat
+	destroy-registry destroy-eks destroy-ecs destroy-ecs-weather destroy-lambda destroy-agentcore \
+	destroy-bastion destroy-alb destroy-lbc destroy-network destroy-nat
 
 # Order matters: nat adds IGW routes; endpoints need the VPC; compute needs both.
-all: bootstrap registry network nat endpoints eks ecs ecs-weather lambda bastion app-deploy
+# agentcore imports the Anthropic secret from the lambda stack and the ECR repo.
+all: bootstrap registry network nat endpoints eks ecs ecs-weather lambda agentcore bastion app-deploy
 
 bootstrap:
 	$(DEPLOY) --stack-name $(STACK_PREFIX)-bootstrap \
@@ -142,7 +146,13 @@ lambda: lambda-agent-package lambda-sqs-package
 		--query 'Stacks[0].Outputs[?OutputKey==`PrivateApiId`].OutputValue' --output text) && \
 	aws apigateway create-deployment --region $(AWS_REGION) --rest-api-id $$api \
 		--stage-name v1 --description "agent $$agent_ver sqs $$sqs_ver" >/dev/null && \
-	echo "Lambda agent and SQS weather function deployed. Pass ANTHROPIC_API_KEY=... if the secret is still empty."
+		echo "Lambda agent and SQS weather function deployed. Pass ANTHROPIC_API_KEY=... if the secret is still empty."
+
+# Tel Aviv Strands agent on AgentCore Runtime. Image must exist (APP=agentcore app-push).
+agentcore:
+	$(DEPLOY) --stack-name $(STACK_PREFIX)-agentcore \
+		--template-file $(INFRA)/41-agentcore/runtime.yaml \
+		--parameter-overrides $(COMMON_PARAMS) ImageTag=$(shell cat app/agentcore/.version)
 
 # Deploy after eks, so the cluster exports the bastion's access entry needs exist.
 bastion:
@@ -167,7 +177,12 @@ app-build:
 	@test -n "$(filter $(APP),$(APPS))" || (echo "Unknown APP '$(APP)'. Registered: $(APPS)" && exit 1)
 	@test -f "$(APP_DIR)/Dockerfile" || (echo "Missing $(APP_DIR)/Dockerfile" && exit 1)
 	@test -n "$(IMAGE_TAG)" || (echo "Missing $(APP_DIR)/.version" && exit 1)
-	docker build -t $(ECR_URI):$(IMAGE_TAG) -t $(ECR_URI):latest $(APP_DIR)
+	@if [ "$(APP)" = "agentcore" ]; then \
+		docker buildx build --platform linux/arm64 --provenance=false \
+			-t $(ECR_URI):$(IMAGE_TAG) -t $(ECR_URI):latest --push $(APP_DIR); \
+	else \
+		docker build -t $(ECR_URI):$(IMAGE_TAG) -t $(ECR_URI):latest $(APP_DIR); \
+	fi
 
 # Every push is a new release, so the patch number moves first.
 version-bump:
@@ -186,8 +201,10 @@ app-push: version-bump
 	@$(MAKE) --no-print-directory app-publish APP=$(APP)
 
 app-publish: app-login app-build
-	docker push $(ECR_URI):$(IMAGE_TAG)
-	docker push $(ECR_URI):latest
+	@if [ "$(APP)" != "agentcore" ]; then \
+		docker push $(ECR_URI):$(IMAGE_TAG); \
+		docker push $(ECR_URI):latest; \
+	fi
 	@echo "Pushed $(ECR_URI):$(IMAGE_TAG) and $(ECR_URI):latest"
 
 app-image: app-push
@@ -214,6 +231,12 @@ charts-version:
 	if [ -n "$$url" ] && [ "$$url" != "None" ]; then \
 		sed -i -E "/^agent:/,/^[[:space:]]*$$/ s|^  serviceUrl:.*|  serviceUrl: $$url|" $(MAIN_VALUES); \
 		echo "$(MAIN_VALUES): agent.serviceUrl set to $$url"; \
+	fi
+	@arn=$$(aws cloudformation list-exports --region $(AWS_REGION) \
+		--query "Exports[?Name=='$(STACK_PREFIX)-AgentCoreRuntimeArn'].Value" --output text 2>/dev/null); \
+	if [ -n "$$arn" ] && [ "$$arn" != "None" ]; then \
+		sed -i -E "/^agentcore:/,/^[[:space:]]*$$/ s|^  runtimeArn:.*|  runtimeArn: $$arn|" $(MAIN_VALUES); \
+		echo "$(MAIN_VALUES): agentcore.runtimeArn set to $$arn"; \
 	fi
 	@qurl=$$(aws cloudformation list-exports --region $(AWS_REGION) \
 		--query "Exports[?Name=='$(STACK_PREFIX)-WorkQueueUrl'].Value" --output text 2>/dev/null); \
@@ -438,6 +461,7 @@ connect:
 lint:
 	cfn-lint $(INFRA)/00-bootstrap/*.yaml $(INFRA)/15-registry/*.yaml $(INFRA)/10-network/*.yaml \
 		$(INFRA)/20-eks/*.yaml $(INFRA)/30-ecs/*.yaml $(INFRA)/31-ecs/*.yaml $(INFRA)/40-lambda/*.yaml \
+		$(INFRA)/41-agentcore/*.yaml \
 		$(INFRA)/50-bastion/*.yaml $(INFRA)/60-alb/*.yaml $(INFRA)/61-lbc/*.yaml
 
 outputs:
@@ -468,6 +492,10 @@ destroy-nat:
 destroy-lambda:
 	aws cloudformation delete-stack --region $(AWS_REGION) --stack-name $(STACK_PREFIX)-lambda
 	aws cloudformation wait stack-delete-complete --region $(AWS_REGION) --stack-name $(STACK_PREFIX)-lambda
+
+destroy-agentcore:
+	aws cloudformation delete-stack --region $(AWS_REGION) --stack-name $(STACK_PREFIX)-agentcore
+	aws cloudformation wait stack-delete-complete --region $(AWS_REGION) --stack-name $(STACK_PREFIX)-agentcore
 
 # Must go before destroy-eks: this stack imports the cluster's exports.
 destroy-bastion:
@@ -502,7 +530,7 @@ destroy-lbc:
 	aws cloudformation wait stack-delete-complete --region $(AWS_REGION) --stack-name $(STACK_PREFIX)-lbc
 
 # Endpoints must go before the VPC: the VPC's exports are in use until they do.
-destroy-network: destroy-lbc destroy-alb destroy-bastion destroy-eks destroy-ecs destroy-lambda destroy-nat
+destroy-network: destroy-lbc destroy-alb destroy-bastion destroy-eks destroy-ecs destroy-agentcore destroy-lambda destroy-nat
 	aws cloudformation delete-stack --region $(AWS_REGION) --stack-name $(STACK_PREFIX)-endpoints
 	aws cloudformation wait stack-delete-complete --region $(AWS_REGION) --stack-name $(STACK_PREFIX)-endpoints
 	aws cloudformation delete-stack --region $(AWS_REGION) --stack-name $(STACK_PREFIX)-vpc

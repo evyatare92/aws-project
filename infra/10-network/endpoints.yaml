@@ -365,6 +365,24 @@ Resources:
         - Key: Name
           Value: !Sub '${ProjectName}-${Environment}-vpce-sqs'
 
+  # Data plane for InvokeAgentRuntime from EKS pods (Tel Aviv AgentCore agent).
+  BedrockAgentCoreEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !ImportValue
+        'Fn::Sub': '${ProjectName}-${Environment}-VpcId'
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.bedrock-agentcore'
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SecurityGroupIds: [!Ref EndpointSecurityGroup]
+      SubnetIds: !If
+        - UseMultiAz
+        - !Split [',', !ImportValue { 'Fn::Sub': '${ProjectName}-${Environment}-EndpointSubnetIds' }]
+        - - !Select [0, !Split [',', !ImportValue { 'Fn::Sub': '${ProjectName}-${Environment}-EndpointSubnetIds' }]]
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-vpce-bedrock-agentcore'
+
 Outputs:
   EndpointSecurityGroupId:
     Value: !Ref EndpointSecurityGroup

@@ -10,6 +10,7 @@ The browser loads the SPA from the main app. **Live** updates call `GET /api/liv
 |----------|-----------------|----------|
 | `new-york` | `ecs` | ECS service `app/weather` |
 | `barcelona` | `agent` | Lambda `app/agent` via API Gateway |
+| `tel-aviv` | `agentcore` | AgentCore Runtime `app/agentcore` (Strands) |
 | `bangkok`, `tokyo` | `sqs` | Lambda `app/sqs-weather` via SQS + DynamoDB |
 
 Other cities in static JSON have no live backend (`404` from `/api/live/...`).
@@ -96,7 +97,44 @@ Response includes `source: "lambda-agent"` and `model` for display/debug.
 
 ---
 
-## 3. Bangkok / Tokyo — SQS + DynamoDB (async poll)
+## 3. Tel Aviv — AgentCore Runtime (synchronous SDK)
+
+**AgentCore Runtime** (`infra/41-agentcore/runtime.yaml`, code in `app/agentcore/`):
+
+- Strands agent with **Anthropic Claude Sonnet 4.5**, same tool (`get_current_weather` → Open-Meteo) as Barcelona
+- Hosted by **Amazon Bedrock AgentCore** (linux/arm64 container in ECR), not Lambda
+- **VPC mode**: ENIs in app subnets; egress via NAT; secret from Secrets Manager
+- Main app calls **`InvokeAgentRuntime`** (IRSA), payload `{ "cityId": "tel-aviv" }`
+- HTTP contract inside the runtime is `POST /invocations` + `GET /ping` (AgentCore SDK)
+
+**Main app** (`fetchLive` → `agentcore`):
+
+Uses `AGENTCORE_RUNTIME_ARN` from Helm (`make charts-stage` fills `AgentCoreRuntimeArn`).
+
+```mermaid
+sequenceDiagram
+  participant Browser
+  participant Main as main pod
+  participant VPCE as bedrock-agentcore VPCE
+  participant AC as AgentCore Runtime
+  participant OM as Open-Meteo
+  participant AI as Anthropic
+
+  Browser->>Main: GET /api/live/weather/tel-aviv
+  Main->>VPCE: InvokeAgentRuntime {cityId}
+  VPCE->>AC: POST /invocations
+  AC->>AI: Claude + tool use
+  AC->>OM: get_current_weather
+  OM-->>AC: observations
+  AC-->>Main: 200 JSON (source agentcore)
+  Main-->>Browser: 200 JSON
+```
+
+Response includes `source: "agentcore"` and `model`. Barcelona stays on Lambda.
+
+---
+
+## 4. Bangkok / Tokyo — SQS + DynamoDB (async poll)
 
 SQS is **one-way**: the worker cannot HTTP callback to the main pod. Pattern:
 
@@ -151,10 +189,10 @@ sequenceDiagram
 | GET | `/api/live/weather/{cityId}` | Live backend per city |
 | GET | `/*` | Static assets (`web/`) |
 
-Frontend (`app.js`): **Try now** on a card calls `/api/live/weather/{id}` and shows toasts per `SOURCE_COPY` (ECS / agent / sqs).
+Frontend (`app.js`): **Try now** on a card calls `/api/live/weather/{id}` and shows toasts per `SOURCE_COPY` (ECS / agent / agentcore / sqs).
 
 ---
 
 ## Data shape
 
-Live backends return JSON compatible with the static card renderer: `city`, `country`, `timezone`, `condition`, `conditionLabel`, `temperatureC`, `feelsLikeC`, `humidity`, `windKph`, optional `summary`, plus `source` (`open-meteo`, `lambda-agent`, `sqs-lambda`, etc.).
+Live backends return JSON compatible with the static card renderer: `city`, `country`, `timezone`, `condition`, `conditionLabel`, `temperatureC`, `feelsLikeC`, `humidity`, `windKph`, optional `summary`, plus `source` (`open-meteo`, `lambda-agent`, `agentcore`, `sqs-lambda`, etc.).

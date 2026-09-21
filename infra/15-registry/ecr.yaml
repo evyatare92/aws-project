@@ -3,7 +3,7 @@ Description: >-
   Private ECR repositories for container images. EKS node roles and the ECS task
   execution role already include account-wide ECR pull permissions; repository
   names follow ${ProjectName}-${Environment}/* so they align with the EKS-User
-  IAM policy in the EKS stack.
+  IAM policy in the EKS stack. agentcore is linux/arm64 (AgentCore Runtime).
 
 Parameters:
   ProjectName:
@@ -85,6 +85,26 @@ Resources:
         - Key: Environment
           Value: !Ref Environment
 
+  AgentcoreRepository:
+    Type: AWS::ECR::Repository
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      RepositoryName: !Sub '${ProjectName}-${Environment}/agentcore'
+      ImageTagMutability: MUTABLE
+      EmptyOnDelete: true
+      ImageScanningConfiguration:
+        ScanOnPush: true
+      EncryptionConfiguration:
+        EncryptionType: AES256
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}/agentcore'
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+
 Outputs:
   MainRepositoryName:
     Value: !Ref MainRepository
@@ -105,6 +125,11 @@ Outputs:
     Value: !GetAtt WeatherRepository.RepositoryUri
     Export:
       Name: !Sub '${ProjectName}-${Environment}-EcrWeatherRepositoryUri'
+
+  AgentcoreRepositoryUri:
+    Value: !GetAtt AgentcoreRepository.RepositoryUri
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-EcrAgentcoreRepositoryUri'
 
   DockerLoginCommand:
     Description: Run on a machine with Docker and AWS CLI credentials that can push to ECR.
