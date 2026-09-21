@@ -128,11 +128,16 @@ function showToast(title, detail, type = "success", timeout = 5000) {
   return { dismiss };
 }
 
+const DEFAULT_CITY = "new-york";
+
 function populateCitySelect(cities) {
   const select = document.getElementById("city-select");
   select.innerHTML = cities
     .map((c) => `<option value="${c.id}">${c.city}, ${c.country}</option>`)
     .join("");
+  if (cities.some((c) => c.id === DEFAULT_CITY)) {
+    select.value = DEFAULT_CITY;
+  }
   select.disabled = false;
   select.addEventListener("change", renderSelectedCity);
 }
