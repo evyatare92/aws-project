@@ -1,6 +1,6 @@
 # Weather backends and application flows
 
-The browser loads the SPA from the main app. **Live** updates call `GET /api/live/weather/{cityId}` on the same origin (Gateway URL or port-forward). Routing is implemented in `app/main/server.js`; the UI maps cities in `app/main/web/app.js`.
+The browser loads the SPA from **CloudFront** (`make cdn`). **Live** updates call `GET /api/live/weather/{cityId}` on the **same origin** (CloudFront proxies `/api/*` to the Gateway ALB). `make app-forward` is the same `/api` paths on `localhost:8080`. Routing is implemented in `app/main/server.js`; the UI maps cities in `app/main/web/app.js`.
 
 ---
 

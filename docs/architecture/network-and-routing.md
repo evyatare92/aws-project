@@ -1,6 +1,6 @@
 # Network and routing
 
-The VPC is designed as a **private application network** with **controlled egress** and **no inbound internet** except what you explicitly add (NAT for outbound, Gateway ALB for the web app).
+The VPC is designed as a **private application network** with **controlled egress** and **no inbound internet** except what you explicitly add (NAT for outbound, Gateway ALB as the CloudFront API origin).
 
 Default CIDR: **`10.0.0.0/16`** (`infra/10-network/vpc.yaml`).
 
@@ -111,7 +111,7 @@ flowchart LR
 | lambda | Lambda control plane |
 | sqs | Main app sends messages (can also use NAT) |
 
-`EndpointAvailability=single-az` (default) places one ENI per endpoint type in the first endpoint subnet; DNS still resolves VPC-wide (cross-AZ traffic possible).
+`ENDPOINT_AZ` defaults to **`multi-az`** (one ENI per AZ). `single-az` places one ENI per endpoint type in the first endpoint subnet; DNS still resolves VPC-wide (cross-AZ traffic possible).
 
 ---
 
@@ -134,10 +134,9 @@ flowchart LR
   ALB --> TG --> Pod
 ```
 
-- **CloudFront** default origin is the private S3 bucket (OAC). Path `/api/*` is a custom HTTP origin to the Gateway ALB (origin read timeout 60s for AgentCore).
-- **WAF** (CLOUDFRONT, us-east-1) allows only `CLIENT_CIDR`.
-- **ALB security group** (from the cdn stack) allows TCP 80 only from the CloudFront origin-facing prefix list. Direct browser hits to the ALB are dropped.
-- **LoadBalancerConfiguration** uses that security group when `gateway.securityGroupId` is set (`make cdn` / `charts-stage`). The CRD wants SG **IDs as strings** (`securityGroups: ["sg-…"]`), not `{identifier: …}` objects (those are only for `loadBalancerSubnets`). `manageBackendSecurityGroupRules: true` keeps IP-mode pod SGs open from the ALB. Without CDN, `make alb` still uses `sourceRanges` for your `/32`.
+- **S3**, **OAC**, **CloudFront cache behaviors**, and **WAF rule list** (default Block, allow `CLIENT_CIDR`): **[cdn-and-waf.md](cdn-and-waf.md)**.
+- **ALB security group** (from `aws-project-dev-cdn`) allows TCP 80 only from the CloudFront origin-facing prefix list. Direct browser hits to the ALB are dropped.
+- **LoadBalancerConfiguration** uses that SG as `securityGroups: ["sg-…"]` strings plus `manageBackendSecurityGroupRules: true` when `gateway.securityGroupId` is set (`make cdn` / `charts-stage`). Without CDN, `make alb` still uses `sourceRanges` for your `/32`.
 - **TargetGroupConfiguration** (`targetType: ip`) registers **pod IPs** (port 8080). ALB subnets in every AZ where pods run.
 - In-cluster Service type is **ClusterIP**.
 
@@ -154,20 +153,17 @@ Republish the SPA with `make cdn-sync` after UI changes (S3 sync + CloudFront in
 | `bedrock-agentcore.{region}.amazonaws.com` | AgentCore data plane (via **bedrock-agentcore** endpoint) | Main app pods (`InvokeAgentRuntime`) |
 | Kubernetes Service `weather-main.weather.svc` | ClusterIP | In-cluster only; HTTPRoute backend |
 
-Cloud Map is **private DNS inside the VPC**; your laptop cannot resolve it without being in the VPC (use Gateway URL or `app-forward`).
+Cloud Map is **private DNS inside the VPC**; your laptop cannot resolve it without being in the VPC (use the CloudFront URL or `app-forward`).
 
 ---
 
-## Security groups (high level)
+## Security groups
 
-| SG | Attached to | Notable rules |
-|----|-------------|---------------|
-| EKS cluster SG | Control plane ENIs | :443 from VPC CIDR |
-| EKS node cluster SG | Worker nodes | Managed by EKS; LBC adds rules for ALB → pod |
-| Bastion SG | Bastion EC2 | Egress; ingress none (SSM outbound-only model) |
-| Lambda SG | Lambda ENIs | Egress all (NAT for Open-Meteo / Anthropic) |
-| Endpoint SG | VPCE ENIs | :443 from VPC CIDR |
-| LBC-managed or cdn SG | Gateway ALB | :80 from `sourceRanges` (alb) or CloudFront prefix list (`make cdn`) |
+High-level map: additional EKS cluster SG on the **control plane**, EKS-managed cluster SG on **nodes/pods**, bastion (egress only), ECS tasks (inbound from VPC CIDR), Lambda and AgentCore (egress only), interface endpoints (`:443` from VPC), Gateway ALB (TCP 80 from the CloudFront origin-facing prefix list after `make cdn`).
+
+Full attachment, rules, LBC-created groups, and console/CLI lookup: **[security-groups.md](security-groups.md)**.
+
+IAM principals for the same resources: **[iam-and-access.md](iam-and-access.md)**.
 
 ---
 
@@ -175,9 +171,10 @@ Cloud Map is **private DNS inside the VPC**; your laptop cannot resolve it witho
 
 | Goal | Path |
 |------|------|
-| Browse app from home | `make alb` → ALB DNS (IP allowlist) |
+| Browse app from home | `make cdn` → CloudFront HTTPS URL (WAF = your `/32`; ALB only from CloudFront) |
+| Direct ALB (pre-CDN only) | `make alb` → ALB HTTP DNS with `sourceRanges` |
 | Browse app via bastion | `make app-forward` → SSM → bastion `kubectl port-forward` → ClusterIP |
 | Shell on bastion | `make connect` (SSM) |
 | kubectl / Helm | On bastion (kubeconfig via `aws eks update-kubeconfig`) |
 
-See [iam-and-access.md](iam-and-access.md) for credentials and roles.
+See [iam-and-access.md](iam-and-access.md) for IRSA and EKS access entries, and [security-groups.md](security-groups.md) for ALB / node SG rules.

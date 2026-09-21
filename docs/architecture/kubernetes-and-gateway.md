@@ -15,7 +15,7 @@ Defined in `infra/20-eks/cluster.yaml`.
 | Nodes | Managed node group (default `t3.small`, desired 2, **min 2**) |
 | Pod networking | Amazon VPC CNI (pod IPs from app subnet CIDRs) |
 
-**IMDSv2** on nodes: `HttpPutResponseHopLimit: 1` so **pods cannot use the instance profile**. AWS API calls from application pods must use **IRSA**.
+**IMDSv2** on nodes: `HttpPutResponseHopLimit: 1` so **pods cannot use the instance profile**. AWS API calls from application pods must use **IRSA** (roles and console/CLI lookup: [iam-and-access.md](iam-and-access.md)).
 
 **OIDC provider** is created in the EKS stack for `AssumeRoleWithWebIdentity`.
 
@@ -58,7 +58,7 @@ Public HTTP is **not** `Service type: LoadBalancer`. It is:
 
 Templates: `deploy/charts/main/templates/gateway.yaml` (rendered when `gateway.sourceRange` or `gateway.securityGroupId` is set).
 
-Public UI is **CloudFront** (`make cdn`): static files from S3, `/api/*` forwarded to this ALB. The browser keeps same-origin `/api/...` URLs.
+Public UI is **CloudFront** (`make cdn`): private S3 via OAC, `/api/*` forwarded to this ALB. Details: [cdn-and-waf.md](cdn-and-waf.md). The browser keeps same-origin `/api/...` URLs. Direct ALB access is not the browse path after CDN.
 
 **Controller install** (`make lbc`):
 
@@ -116,7 +116,9 @@ ClusterIP is still the HTTPRoute backend; the ALB target group points at **pod E
 | `make charts-version` | Sync chart version + image tag from `app/main/.version`; refresh URLs/roles from CFN exports |
 | `make charts-stage` | `aws s3 sync deploy/charts` → artifacts bucket |
 | `make app-helm` | SSM on bastion → `bastion-deploy.sh` → `helm upgrade --install` |
-| `make app-deploy` | `app-push` + `charts-stage` + `app-helm` |
+| `make app-deploy` | `app-push` + `charts-stage` + `app-helm` + `cdn-sync` (needs the CDN stack) |
+| `make cdn` | WAF + CloudFront/S3 + attach CloudFront SG to Gateway + `cdn-sync` |
+| `make cdn-sync` | `aws s3 sync app/main/web` + CloudFront invalidation |
 | `make app-forward` | SSM: `bastion-port-forward.sh` then tunnel to bastion loopback |
 
 After upgrade, `bastion-deploy.sh` **rollout restart** so nodes pull the pinned tag if the deployment spec did not change.

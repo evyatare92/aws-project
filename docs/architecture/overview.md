@@ -29,11 +29,11 @@ flowchart TB
     AgentCore["AgentCore Runtime\nTel Aviv agent"]
     LambdaVPC["Lambda ENIs"]
     VPCE["VPC endpoints\nAWS APIs"]
-    NAT["NAT Gateway\nsingle AZ"]
+    NAT["NAT Gateway\none per AZ"]
   end
 
   UserPC -->|"HTTPS\nWAF IP allowlist"| CF
-  CF -->|"static"| S3Front["S3 SPA"]
+  CF -->|"static OAC"| S3Front
   CF -->|"/api/* HTTP"| ALB
   UserPC -->|"SSM Session Manager"| Bastion
   ALB --> EKS
@@ -82,8 +82,9 @@ Stacks are named `{ProjectName}-{Environment}-*` (default `aws-project-dev-*). E
 | Target | Template | Role |
 |--------|----------|------|
 | `lbc-iam` / `lbc` | `infra/61-lbc/iam.yaml` + Helm | IRSA for AWS Load Balancer Controller |
-| `alb` | Helm (main chart Gateway) | Internet-facing ALB + Gateway/HTTPRoute |
-| `cdn` | `infra/62-cdn/*` + S3 sync | CloudFront + WAF IP allowlist; SPA on S3; `/api/*` → ALB |
+| `alb` | Helm (main chart Gateway) | Internet-facing ALB + Gateway/HTTPRoute (`sourceRanges` until CDN) |
+| `cdn-waf` | `infra/62-cdn/waf.yaml` (us-east-1) | CloudFront-scope WAF IP allowlist |
+| `cdn` | `infra/62-cdn/frontend.yaml` + Helm + `cdn-sync` | Private S3 (OAC) + CloudFront; `/api/*` → ALB; ALB SG = CloudFront prefix list |
 
 Legacy **`infra/60-alb/alb.yaml`** (CloudFormation ALB + NodePort) is kept for teardown only; **Gateway** is the supported public path.
 
@@ -125,7 +126,7 @@ sequenceDiagram
 ```
 
 - **Image tags** come from `app/main/.version` (not `latest` in cluster).
-- **Chart values** pull CloudFormation exports (agent URL, SQS URL, DynamoDB table, MainApp IRSA ARN, Gateway subnets when staging for `alb`).
+- **Chart values** pull CloudFormation exports (agent URL, SQS URL, DynamoDB table, MainApp IRSA ARN, Gateway subnets, and after CDN the CloudFront ALB security group).
 - **EKS API is private**; Helm and `kubectl` run on the bastion (or any host inside the VPC with credentials).
 
 Public URL after `make cdn`: `https://{CloudFront domain}` (WAF allows `CLIENT_CIDR`). The Gateway ALB is only reachable from CloudFront.
@@ -152,6 +153,8 @@ See [weather-backends.md](weather-backends.md) for step-by-step flows.
 ## Related docs
 
 - [Network and routing](network-and-routing.md)
+- [CloudFront, S3, and WAF](cdn-and-waf.md)
+- [Security groups](security-groups.md)
 - [Kubernetes and Gateway](kubernetes-and-gateway.md)
 - [Weather backends](weather-backends.md)
 - [IAM and access](iam-and-access.md)
