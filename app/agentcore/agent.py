@@ -20,23 +20,24 @@ from pydantic import BaseModel, Field
 from strands import Agent, tool
 from strands.models.anthropic import AnthropicModel
 
-log = logging.getLogger()
-log.setLevel(logging.INFO)
+log = logging.getLogger("weather-agentcore")
+
+
+def _configure_logging():
+    log.setLevel(logging.INFO)
+    if log.handlers:
+        return
+    handler = logging.StreamHandler()
+    handler.setFormatter(logging.Formatter("%(levelname)s %(name)s %(message)s"))
+    log.addHandler(handler)
+    log.propagate = False
+
+
+_configure_logging()
 
 MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-5")
 OPEN_METEO_URL = "https://api.open-meteo.com/v1/forecast"
 SKILL_DIR = Path(__file__).resolve().parent / "skills" / "tel-aviv-weather"
-
-CITIES = {
-    "tel-aviv": {
-        "id": "tel-aviv",
-        "city": "Tel Aviv",
-        "country": "Israel",
-        "timezone": "Asia/Jerusalem",
-        "latitude": 32.0853,
-        "longitude": 34.7818,
-    },
-}
 
 CITIES = {
     "tel-aviv": {
@@ -103,7 +104,7 @@ def get_current_weather(latitude: float, longitude: float, timezone: str) -> dic
         }
     )
     request = urllib.request.Request(f"{OPEN_METEO_URL}?{query}")
-    log.info("waiting for operation to complete: Open-Meteo %s,%s", latitude, longitude)
+    log.info("waiting for completion: Open-Meteo %s,%s", latitude, longitude)
     try:
         with urllib.request.urlopen(request, timeout=8) as response:
             payload = json.loads(response.read().decode("utf-8"))
@@ -114,7 +115,7 @@ def get_current_weather(latitude: float, longitude: float, timezone: str) -> dic
     if not current:
         raise RuntimeError("Open-Meteo response missing current data")
 
-    return {
+    observations = {
         "temperatureC": current.get("temperature_2m"),
         "feelsLikeC": current.get("apparent_temperature"),
         "humidity": current.get("relative_humidity_2m"),
@@ -122,6 +123,8 @@ def get_current_weather(latitude: float, longitude: float, timezone: str) -> dic
         "weatherCode": current.get("weather_code"),
         "observedAt": current.get("time"),
     }
+    log.info("output: Open-Meteo %s", json.dumps(observations, default=str))
+    return observations
 
 
 def _skill_instructions():
@@ -163,7 +166,7 @@ def _run_agent(city):
         system_prompt=instructions,
         callback_handler=None,
     )
-    log.info("waiting for operation to complete: Strands agent for %s", city["city"])
+    log.info("waiting for completion: Strands agent %s", city["city"])
     result = agent(
         (
             f"Use the tel-aviv-weather skill. Look up live weather for "
@@ -175,6 +178,7 @@ def _run_agent(city):
     forecast = result.structured_output
     if forecast is None:
         raise RuntimeError("Agent returned no structured forecast")
+    log.info("output: forecast %s", json.dumps(forecast.model_dump(), default=str))
     return forecast
 
 
@@ -192,19 +196,19 @@ def _payload_dict(payload):
 def invoke(payload, context=None):
     body = _payload_dict(payload)
     city_id = str(body.get("cityId") or body.get("city") or "tel-aviv").strip().lower()
-    log.info("starting execution city=%s", city_id)
+    log.info("before execution city=%s", city_id)
     city = CITIES.get(city_id)
     if not city:
+        log.info("finish execution city=%s error=unsupported", city_id)
         return {"error": f"City '{city_id}' is not supported by the AgentCore weather agent"}
 
     try:
         forecast = _run_agent(city)
     except Exception as error:
-        log.exception("finished: agent error")
+        log.exception("finish execution city=%s error=%s", city_id, error)
         return {"error": str(error)}
 
-    log.info("finished: %s %s°C", city["city"], forecast.temperatureC)
-    return {
+    body = {
         "id": city["id"],
         "city": city["city"],
         "country": city["country"],
@@ -213,6 +217,8 @@ def invoke(payload, context=None):
         "model": MODEL,
         **forecast.model_dump(),
     }
+    log.info("finish execution city=%s output=%s", city["city"], json.dumps(body, default=str))
+    return body
 
 
 if __name__ == "__main__":

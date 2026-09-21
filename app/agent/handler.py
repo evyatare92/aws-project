@@ -89,7 +89,7 @@ def get_current_weather(latitude: float, longitude: float, timezone: str) -> dic
         }
     )
     request = urllib.request.Request(f"{OPEN_METEO_URL}?{query}")
-    log.info("waiting for operation to complete: Open-Meteo %s,%s", latitude, longitude)
+    log.info("waiting for completion: Open-Meteo %s,%s", latitude, longitude)
     try:
         with urllib.request.urlopen(request, timeout=8) as response:
             payload = json.loads(response.read().decode("utf-8"))
@@ -100,7 +100,7 @@ def get_current_weather(latitude: float, longitude: float, timezone: str) -> dic
     if not current:
         raise RuntimeError("Open-Meteo response missing current data")
 
-    return {
+    observations = {
         "temperatureC": current.get("temperature_2m"),
         "feelsLikeC": current.get("apparent_temperature"),
         "humidity": current.get("relative_humidity_2m"),
@@ -108,6 +108,8 @@ def get_current_weather(latitude: float, longitude: float, timezone: str) -> dic
         "weatherCode": current.get("weather_code"),
         "observedAt": current.get("time"),
     }
+    log.info("output: Open-Meteo %s", json.dumps(observations, default=str))
+    return observations
 
 
 def _run_agent(city):
@@ -125,7 +127,7 @@ def _run_agent(city):
         ),
         callback_handler=None,
     )
-    log.info("waiting for operation to complete: Strands agent for %s", city["city"])
+    log.info("waiting for completion: Strands agent %s", city["city"])
     result = agent(
         (
             f"Look up the live weather for {city['city']}, {city['country']} "
@@ -136,6 +138,7 @@ def _run_agent(city):
     forecast = result.structured_output
     if forecast is None:
         raise RuntimeError("Agent returned no structured forecast")
+    log.info("output: forecast %s", json.dumps(forecast.model_dump(), default=str))
     return forecast
 
 
@@ -150,28 +153,26 @@ def _response(status, body):
 def handler(event, context):
     params = event.get("pathParameters") or {}
     city_id = (params.get("city") or "").strip().lower()
-    log.info("starting execution city=%s request=%s", city_id, getattr(context, "aws_request_id", "-"))
+    log.info("before execution city=%s request=%s", city_id, getattr(context, "aws_request_id", "-"))
     city = CITIES.get(city_id)
     if not city:
-        log.info("finished: city '%s' is not supported", city_id)
+        log.info("finish execution city=%s error=unsupported", city_id)
         return _response(404, {"error": f"City '{city_id}' is not supported by the weather agent"})
 
     try:
         forecast = _run_agent(city)
     except Exception as error:
-        log.exception("finished: agent error")
+        log.exception("finish execution city=%s error=%s", city_id, error)
         return _response(502, {"error": str(error)})
 
-    log.info("finished: %s %s°C", city["city"], forecast.temperatureC)
-    return _response(
-        200,
-        {
-            "id": city["id"],
-            "city": city["city"],
-            "country": city["country"],
-            "timezone": city["timezone"],
-            "source": "lambda-agent",
-            "model": MODEL,
-            **forecast.model_dump(),
-        },
-    )
+    body = {
+        "id": city["id"],
+        "city": city["city"],
+        "country": city["country"],
+        "timezone": city["timezone"],
+        "source": "lambda-agent",
+        "model": MODEL,
+        **forecast.model_dump(),
+    }
+    log.info("finish execution city=%s output=%s", city["city"], json.dumps(body, default=str))
+    return _response(200, body)
