@@ -60,11 +60,17 @@ spec:
       volumes:
         - name: tmp
           emptyDir: {}
-      # Keep the two replicas on separate nodes when the cluster has room.
+      # Hard spread: one replica per node and per AZ when the cluster can satisfy it.
       topologySpreadConstraints:
         - maxSkew: 1
           topologyKey: kubernetes.io/hostname
-          whenUnsatisfiable: ScheduleAnyway
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              {{- include "main.selectorLabels" . | nindent 14 }}
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: DoNotSchedule
           labelSelector:
             matchLabels:
               {{- include "main.selectorLabels" . | nindent 14 }}

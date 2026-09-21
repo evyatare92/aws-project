@@ -45,18 +45,25 @@ flowchart LR
   end
 
   subgraph PublicRT["NAT public RT"]
-    PubA["10.0.104.0/24"]
-    PubB["10.0.105.0/24"]
-    PubC["10.0.106.0/24"]
+    PubA["pub subnet a"]
+    PubB["pub subnet b"]
+    PubC["pub subnet c"]
   end
 
   IGW["Internet Gateway"]
-  NAT["NAT Gateway\n(in pub-a)"]
+  NATA["NAT GW a"]
+  NATB["NAT GW b"]
+  NATC["NAT GW c"]
 
-  AppA -->|"0.0.0.0/0\n(after make nat)"| NAT
-  AppB --> NAT
-  AppC --> NAT
-  NAT --> IGW
+  AppA -->|"0.0.0.0/0"| NATA
+  AppB --> NATB
+  AppC --> NATC
+  NATA --> IGW
+  NATB --> IGW
+  NATC --> IGW
+  NATA --- PubA
+  NATB --- PubB
+  NATC --- PubC
 
   PubA --> IGW
   PubB --> IGW
@@ -68,7 +75,7 @@ flowchart LR
 
 **Before `make nat`:** app route tables have **no default route** to the internet. Workloads reach AWS APIs via **VPC endpoints** only.
 
-**After `make nat`:** `AppRouteNatA/B/C` in `infra/10-network/nat.yaml` add `0.0.0.0/0 → NAT Gateway` on each app route table. That enables:
+**After `make nat`:** each app route table uses the **NAT Gateway in the same AZ** (`AppRouteNatA/B/C` → `NatGateway` / `NatGatewayB` / `NatGatewayC` in `infra/10-network/nat.yaml`). Loss of one AZ does not force all private egress through a NAT in a failed zone. That enables:
 
 - ECS Fargate and Lambda to call **Open-Meteo** and **Anthropic** on the public internet
 - EKS nodes to pull images if not fully covered by ECR endpoints (layers still use **S3 gateway** endpoint)

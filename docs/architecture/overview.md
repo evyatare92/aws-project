@@ -60,18 +60,18 @@ Stacks are named `{ProjectName}-{Environment}-*` (default `aws-project-dev-*). E
 | 1 | `bootstrap` | `infra/00-bootstrap/artifacts.yaml` | S3 artifacts bucket (Helm charts, Lambda zips, bastion tools) |
 | 2 | `registry` | `infra/15-registry/ecr.yaml` | ECR repos for `main` and `weather` images |
 | 3 | `network` | `infra/10-network/vpc.yaml` | VPC, app/data/endpoint subnets, route tables (no IGW yet) |
-| 4 | `endpoints` | `infra/10-network/endpoints.yaml` | S3/DynamoDB gateway + interface endpoints (SSM, ECR, EKS, …) |
-| 5 | `eks` | `infra/20-eks/cluster.yaml` | Private EKS 1.36, node group, OIDC for IRSA |
-| 6 | `ecs` | `infra/30-ecs/cluster.yaml` | ECS cluster + task roles |
-| 7 | `ecs-weather` | `infra/31-ecs/weather-service.yaml` | Fargate weather API + Cloud Map |
-| 8 | `lambda` | `infra/40-lambda/functions.yaml` | Agent + SQS Lambdas, private API Gateway, SQS, DynamoDB, **MainAppRole** (IRSA) |
-| 9 | `bastion` | `infra/50-bastion/bastion.yaml` | SSM bastion, EKS access entry |
+| 4 | `nat` | `infra/10-network/nat.yaml` | IGW, **one NAT per AZ**, public subnets for Gateway ALB |
+| 5 | `endpoints` | `infra/10-network/endpoints.yaml` | S3/DynamoDB gateway + interface endpoints (SSM, ECR, EKS, …); default **multi-AZ** |
+| 6 | `eks` | `infra/20-eks/cluster.yaml` | Private EKS 1.36, node group (min 2 nodes), OIDC for IRSA |
+| 7 | `ecs` | `infra/30-ecs/cluster.yaml` | ECS cluster + task roles |
+| 8 | `ecs-weather` | `infra/31-ecs/weather-service.yaml` | Fargate weather API (2 tasks, AZ spread) + Cloud Map |
+| 9 | `lambda` | `infra/40-lambda/functions.yaml` | Agent + SQS Lambdas, private API Gateway, SQS, DynamoDB, **MainAppRole** (IRSA) |
+| 10 | `bastion` | `infra/50-bastion/bastion.yaml` | SSM bastion, EKS access entry |
 
 **Not in `make all` (opt-in):**
 
 | Target | Template | Role |
 |--------|----------|------|
-| `nat` | `infra/10-network/nat.yaml` | IGW, NAT, public subnets for ALB (a/b/c), default route on app RTs |
 | `lbc-iam` / `lbc` | `infra/61-lbc/iam.yaml` + Helm | IRSA for AWS Load Balancer Controller |
 | `alb` | Helm (main chart Gateway) | Internet-facing ALB + Gateway/HTTPRoute; sets `gateway.sourceRange` |
 

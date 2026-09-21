@@ -4,8 +4,8 @@ endif
 
 PROJECT     ?= aws-project
 ENV         ?= dev
-# single-az keeps interface endpoint charges to ~1/3; use multi-az for prod.
-ENDPOINT_AZ ?= single-az
+# multi-az places a VPC endpoint ENI per AZ (~3x interface cost vs single-az).
+ENDPOINT_AZ ?= multi-az
 
 INFRA       := infra
 
@@ -52,8 +52,8 @@ COMMON_PARAMS := ProjectName=$(PROJECT) Environment=$(ENV)
 	app-deploy app-helm app-forward alb lbc lbc-iam lbc-stage lbc-install \
 	destroy-registry destroy-eks destroy-ecs destroy-ecs-weather destroy-lambda destroy-bastion destroy-alb destroy-lbc destroy-network destroy-nat
 
-# Order matters: endpoints import the VPC's exports; compute stacks need those endpoints.
-all: bootstrap registry network endpoints eks ecs ecs-weather lambda bastion app-deploy
+# Order matters: nat adds IGW routes; endpoints need the VPC; compute needs both.
+all: bootstrap registry network nat endpoints eks ecs ecs-weather lambda bastion app-deploy
 
 bootstrap:
 	$(DEPLOY) --stack-name $(STACK_PREFIX)-bootstrap \
@@ -83,7 +83,7 @@ endpoints:
 eks:
 	$(DEPLOY) --stack-name $(STACK_PREFIX)-eks \
 		--template-file $(INFRA)/20-eks/cluster.yaml \
-		--parameter-overrides $(COMMON_PARAMS)
+		--parameter-overrides $(COMMON_PARAMS) NodeMinSize=2 NodeDesiredCapacity=2
 
 ecs:
 	$(DEPLOY) --stack-name $(STACK_PREFIX)-ecs \
@@ -93,7 +93,7 @@ ecs:
 ecs-weather:
 	$(DEPLOY) --stack-name $(STACK_PREFIX)-ecs-weather \
 		--template-file $(INFRA)/31-ecs/weather-service.yaml \
-		--parameter-overrides $(COMMON_PARAMS) ImageTag=$(shell cat app/weather/.version)
+		--parameter-overrides $(COMMON_PARAMS) ImageTag=$(shell cat app/weather/.version) DesiredCount=2
 
 AGENT_DIR     := app/agent
 AGENT_S3_KEY  := lambda/agent/handler.zip

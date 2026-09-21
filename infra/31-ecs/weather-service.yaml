@@ -21,8 +21,9 @@ Parameters:
 
   DesiredCount:
     Type: Number
-    Default: 1
+    Default: 2
     MinValue: 0
+    Description: Two tasks spread across AZs for HA behind Cloud Map.
 
   ContainerPort:
     Type: Number

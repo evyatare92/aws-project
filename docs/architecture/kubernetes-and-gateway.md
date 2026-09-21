@@ -12,7 +12,7 @@ Defined in `infra/20-eks/cluster.yaml`.
 | Version | 1.36 (parameter) |
 | API endpoint | **Private only** (`EndpointPublicAccess: false`) |
 | Worker subnets | All three **app** subnets |
-| Nodes | Managed node group (default `t3.small`, desired 2) |
+| Nodes | Managed node group (default `t3.small`, desired 2, **min 2**) |
 | Pod networking | Amazon VPC CNI (pod IPs from app subnet CIDRs) |
 
 **IMDSv2** on nodes: `HttpPutResponseHopLimit: 1` so **pods cannot use the instance profile**. AWS API calls from application pods must use **IRSA**.
@@ -29,7 +29,7 @@ Helm chart: `deploy/charts/main/`.
 |----------|----------------|
 | Namespace | `weather` |
 | Release | `weather-main` |
-| Deployment | 2 replicas, spread across nodes when possible |
+| Deployment | 2 replicas, **hard** topology spread (one pod per node and per AZ when possible); **PDB** `minAvailable: 1` |
 | Service | **ClusterIP**, port 80 → container 8080 |
 | ServiceAccount | IRSA → `MainAppRole` (SQS + DynamoDB) |
 | Probes | `GET /healthz` |

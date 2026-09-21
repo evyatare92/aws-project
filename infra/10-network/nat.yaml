@@ -1,9 +1,9 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Description: >-
-  Outbound internet for the app tier (single NAT in the first AZ) plus two
-  public subnets tagged for an internet-facing ALB. The Gateway API / AWS Load
-  Balancer Controller discovers those subnets; inbound to the ALB is locked
-  down in Kubernetes, not here.
+  Outbound internet for the app tier with one NAT Gateway per Availability Zone,
+  plus three public subnets for an internet-facing Gateway ALB. Each app route
+  table uses the NAT in its AZ so loss of one AZ does not break egress from the
+  others.
 
 Parameters:
   ProjectName:
@@ -31,7 +31,7 @@ Resources:
       VpcId: !ImportValue
         'Fn::Sub': '${ProjectName}-${Environment}-VpcId'
 
-  # Carved from the free space documented in vpc.yaml (10.0.104.0/24).
+  # Public subnets: 10.0.104.0/24 (a), 10.0.105.0/24 (b), 10.0.106.0/24 (c).
   NatPublicSubnet:
     Type: AWS::EC2::Subnet
     Properties:
@@ -45,6 +45,42 @@ Resources:
           Value: !Sub '${ProjectName}-${Environment}-nat-public-a'
         - Key: Tier
           Value: nat
+        - Key: kubernetes.io/role/elb
+          Value: '1'
+        - Key: !Sub 'kubernetes.io/cluster/${ProjectName}-${Environment}'
+          Value: shared
+
+  AlbPublicSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !ImportValue
+        'Fn::Sub': '${ProjectName}-${Environment}-VpcId'
+      AvailabilityZone: !Select [1, !GetAZs '']
+      CidrBlock: !Select [105, !Cidr [!ImportValue { 'Fn::Sub': '${ProjectName}-${Environment}-VpcCidr' }, 256, 8]]
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-alb-public-b'
+        - Key: Tier
+          Value: alb
+        - Key: kubernetes.io/role/elb
+          Value: '1'
+        - Key: !Sub 'kubernetes.io/cluster/${ProjectName}-${Environment}'
+          Value: shared
+
+  AlbPublicSubnetC:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !ImportValue
+        'Fn::Sub': '${ProjectName}-${Environment}-VpcId'
+      AvailabilityZone: !Select [2, !GetAZs '']
+      CidrBlock: !Select [106, !Cidr [!ImportValue { 'Fn::Sub': '${ProjectName}-${Environment}-VpcCidr' }, 256, 8]]
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-alb-public-c'
+        - Key: Tier
+          Value: alb
         - Key: kubernetes.io/role/elb
           Value: '1'
         - Key: !Sub 'kubernetes.io/cluster/${ProjectName}-${Environment}'
@@ -73,48 +109,11 @@ Resources:
       SubnetId: !Ref NatPublicSubnet
       RouteTableId: !Ref NatPublicRouteTable
 
-  # ALB needs two AZs. 10.0.104.0/24 is NatPublicSubnet; this is AZ-b.
-  AlbPublicSubnetB:
-    Type: AWS::EC2::Subnet
-    Properties:
-      VpcId: !ImportValue
-        'Fn::Sub': '${ProjectName}-${Environment}-VpcId'
-      AvailabilityZone: !Select [1, !GetAZs '']
-      CidrBlock: !Select [105, !Cidr [!ImportValue { 'Fn::Sub': '${ProjectName}-${Environment}-VpcCidr' }, 256, 8]]
-      MapPublicIpOnLaunch: true
-      Tags:
-        - Key: Name
-          Value: !Sub '${ProjectName}-${Environment}-alb-public-b'
-        - Key: Tier
-          Value: alb
-        - Key: kubernetes.io/role/elb
-          Value: '1'
-        - Key: !Sub 'kubernetes.io/cluster/${ProjectName}-${Environment}'
-          Value: shared
-
   AlbPublicSubnetBAssociation:
     Type: AWS::EC2::SubnetRouteTableAssociation
     Properties:
       SubnetId: !Ref AlbPublicSubnetB
       RouteTableId: !Ref NatPublicRouteTable
-
-  AlbPublicSubnetC:
-    Type: AWS::EC2::Subnet
-    Properties:
-      VpcId: !ImportValue
-        'Fn::Sub': '${ProjectName}-${Environment}-VpcId'
-      AvailabilityZone: !Select [2, !GetAZs '']
-      CidrBlock: !Select [106, !Cidr [!ImportValue { 'Fn::Sub': '${ProjectName}-${Environment}-VpcCidr' }, 256, 8]]
-      MapPublicIpOnLaunch: true
-      Tags:
-        - Key: Name
-          Value: !Sub '${ProjectName}-${Environment}-alb-public-c'
-        - Key: Tier
-          Value: alb
-        - Key: kubernetes.io/role/elb
-          Value: '1'
-        - Key: !Sub 'kubernetes.io/cluster/${ProjectName}-${Environment}'
-          Value: shared
 
   AlbPublicSubnetCAssociation:
     Type: AWS::EC2::SubnetRouteTableAssociation
@@ -129,7 +128,25 @@ Resources:
       Domain: vpc
       Tags:
         - Key: Name
-          Value: !Sub '${ProjectName}-${Environment}-nat-eip'
+          Value: !Sub '${ProjectName}-${Environment}-nat-eip-a'
+
+  NatEipB:
+    Type: AWS::EC2::EIP
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-nat-eip-b'
+
+  NatEipC:
+    Type: AWS::EC2::EIP
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-nat-eip-c'
 
   NatGateway:
     Type: AWS::EC2::NatGateway
@@ -138,7 +155,25 @@ Resources:
       SubnetId: !Ref NatPublicSubnet
       Tags:
         - Key: Name
-          Value: !Sub '${ProjectName}-${Environment}-nat'
+          Value: !Sub '${ProjectName}-${Environment}-nat-a'
+
+  NatGatewayB:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NatEipB.AllocationId
+      SubnetId: !Ref AlbPublicSubnetB
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-nat-b'
+
+  NatGatewayC:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NatEipC.AllocationId
+      SubnetId: !Ref AlbPublicSubnetC
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-nat-c'
 
   AppRouteNatA:
     Type: AWS::EC2::Route
@@ -154,7 +189,7 @@ Resources:
       RouteTableId: !ImportValue
         'Fn::Sub': '${ProjectName}-${Environment}-AppRouteTableBId'
       DestinationCidrBlock: 0.0.0.0/0
-      NatGatewayId: !Ref NatGateway
+      NatGatewayId: !Ref NatGatewayB
 
   AppRouteNatC:
     Type: AWS::EC2::Route
@@ -162,10 +197,11 @@ Resources:
       RouteTableId: !ImportValue
         'Fn::Sub': '${ProjectName}-${Environment}-AppRouteTableCId'
       DestinationCidrBlock: 0.0.0.0/0
-      NatGatewayId: !Ref NatGateway
+      NatGatewayId: !Ref NatGatewayC
 
 Outputs:
   NatGatewayId:
+    Description: NAT in AZ-a (legacy export name).
     Value: !Ref NatGateway
     Export:
       Name: !Sub '${ProjectName}-${Environment}-NatGatewayId'

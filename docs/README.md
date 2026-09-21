@@ -10,4 +10,6 @@ This folder describes how the **aws-project** Weather Board is built and how tra
 | [architecture/weather-backends.md](architecture/weather-backends.md) | Per-city backends (ECS, agent Lambda, SQS Lambda), API contracts, sequence flows |
 | [architecture/iam-and-access.md](architecture/iam-and-access.md) | IAM roles, who assumes what, bastion and operator access |
 
+Same-region HA: per-AZ NAT (see network doc), multi-AZ VPC endpoints (`ENDPOINT_AZ=multi-az`), 2+ EKS nodes / main pods / ECS weather tasks, Gateway ALB across three public subnets.
+
 Infrastructure lives under `infra/`; applications under `app/`; Helm charts under `deploy/charts/`. The root `Makefile` orchestrates deploy and day‑2 operations.

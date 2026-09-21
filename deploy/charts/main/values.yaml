@@ -55,6 +55,10 @@ resources:
     cpu: 200m
     memory: 128Mi
 
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
 livenessProbe:
   httpGet:
     path: /healthz

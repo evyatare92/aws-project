@@ -38,8 +38,9 @@ Parameters:
 
   NodeMinSize:
     Type: Number
-    Default: 1
+    Default: 2
     MinValue: 1
+    Description: Default 2 so one AZ loss still leaves a worker for the node group.
 
   NodeMaxSize:
     Type: Number
