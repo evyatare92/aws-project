@@ -53,24 +53,21 @@ aws cloudformation list-exports --region eu-west-1 \
 ## Attachment map
 
 ```mermaid
-flowchart TB
-  subgraph Edge["Public edge"]
+graph TB
+  subgraph Edge ["Public edge"]
     CF["CloudFront no VPC SG"]
     PL["Prefix list cloudfront origin-facing"]
     ALB["ALB aws-project-dev-gw"]
     AlbSG["SG aws-project-dev-alb-cloudfront"]
   end
-
-  subgraph Control["EKS control plane ENIs"]
+  subgraph Control ["EKS control plane ENIs"]
     AddlSG["SG aws-project-dev-eks-cluster additional"]
     EksSG["SG eks-cluster-sg EKS-managed"]
   end
-
-  subgraph Nodes["Worker nodes and pods VPC CNI"]
+  subgraph Nodes ["Worker nodes and pods VPC CNI"]
     NodeENI["Node or pod ENIs"]
   end
-
-  subgraph Other["Other ENIs in app subnets"]
+  subgraph Other ["Other ENIs in app subnets"]
     Bastion["Bastion EC2"]
     BastionSG["SG aws-project-dev-bastion"]
     ECS["ECS weather tasks"]
@@ -80,24 +77,22 @@ flowchart TB
     AC["AgentCore ENIs"]
     AcSG["SG aws-project-dev-agentcore"]
   end
-
-  subgraph VPCE["Endpoint subnets"]
+  subgraph VPCE ["Endpoint subnets"]
     EpENI["Interface VPC endpoints"]
     EpSG["SG aws-project-dev-endpoints"]
   end
-
   CF --> PL --> AlbSG
   AlbSG -->|attached| ALB
-  ALB -->|"LBC backend rule 8080"| EksSG
+  ALB -->|LBC backend rule 8080| EksSG
   EksSG -->|attached| NodeENI
   BastionSG -->|attached| Bastion
-  Bastion -->|"tcp 443"| AddlSG
+  Bastion -->|tcp 443| AddlSG
   EcsSG -->|attached| ECS
   LamSG -->|attached| Lam
   AcSG -->|attached| AC
   EpSG -->|attached| EpENI
-  NodeENI -->|"tcp 443"| EpSG
-  NodeENI -->|"any from VPC CIDR"| EcsSG
+  NodeENI -->|tcp 443| EpSG
+  NodeENI -->|any from VPC CIDR| EcsSG
 ```
 
 CloudFront, S3, WAF, API Gateway, SQS, and DynamoDB are **not** in a VPC security group. Their lock-down is WAF, bucket policy / OAC, API Gateway resource policy, and IAM.

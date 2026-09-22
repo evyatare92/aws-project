@@ -32,38 +32,16 @@ Public subnets (NAT stack) are tagged:
 ## Route tables
 
 ```mermaid
-flowchart LR
-  subgraph AppRT["App route tables per AZ"]
-    AppA["app-a RT"]
-    AppB["app-b RT"]
-    AppC["app-c RT"]
-  end
-
-  subgraph IsolatedRT["Isolated RT"]
-    Data["data subnets local only"]
-    EP["endpoint subnets local plus VPCE"]
-  end
-
-  subgraph PublicRT["NAT public RT"]
-    PubA["pub subnet a"]
-    NATA["NAT GW a"]
-    PubB["pub subnet b"]
-    NATB["NAT GW b"]
-    PubC["pub subnet c"]
-    NATC["NAT GW c"]
-  end
-
-  IGW["Internet Gateway"]
-
-  AppA -->|"default route"| NATA
-  AppB -->|"default route"| NATB
-  AppC -->|"default route"| NATC
-  NATA --> IGW
+graph TB
+  AppA["app-a RT"] --> NATA["NAT GW a"]
+  AppB["app-b RT"] --> NATB["NAT GW b"]
+  AppC["app-c RT"] --> NATC["NAT GW c"]
+  NATA --> IGW["Internet Gateway"]
   NATB --> IGW
   NATC --> IGW
-  PubA --> IGW
-  PubB --> IGW
-  PubC --> IGW
+  PubA["pub subnet a"] --> IGW
+  PubB["pub subnet b"] --> IGW
+  PubC["pub subnet c"] --> IGW
 ```
 
 **Before `make nat`:** app route tables have **no default route** to the internet. Workloads reach AWS APIs via **VPC endpoints** only.
@@ -113,18 +91,12 @@ flowchart LR
 Not part of the base VPC template. Activated by **`make nat`**, **`make alb`**, then **`make cdn`**.
 
 ```mermaid
-flowchart LR
-  User["Client\n(your IP /32)"]
-  CF["CloudFront + WAF"]
-  S3["S3 SPA"]
-  ALB["ALB\naws-project-dev-gw"]
-  TG["Target group\ntargetType: ip"]
-  Pod["Pod :8080"]
-
-  User -->|"HTTPS"| CF
-  CF --> S3
-  CF -->|"/api/*"| ALB
-  ALB --> TG --> Pod
+graph LR
+  User["Client your IP"] --> CF["CloudFront plus WAF"]
+  CF --> S3["S3 SPA"]
+  CF -->|api path| ALB["ALB aws-project-dev-gw"]
+  ALB --> TG["target group ip mode"]
+  TG --> Pod["Pod 8080"]
 ```
 
 - **S3**, **OAC**, **CloudFront cache behaviors**, and **WAF rule list** (default Block, allow `CLIENT_CIDR`): **[cdn-and-waf.md](cdn-and-waf.md)**.
