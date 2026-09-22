@@ -142,8 +142,9 @@ Local dev tunnel without CDN: `make app-forward` starts `kubectl port-forward` o
 | Barcelona | `agent` | GET `{AgentApiUrl}/weather/barcelona` (private API Gateway) |
 | Tel Aviv | `agentcore` | `InvokeAgentRuntime` on AgentCore Runtime ARN |
 | Bangkok, Tokyo | `sqs` | SQS message + poll DynamoDB by `requestId` |
+| London | `static` | Bundled `web/data/weather.json` only (no live upstream) |
 
-Static placeholder data for all cities: `GET /api/weather` → bundled `web/data/weather.json`.
+City catalog: `GET /data/weather.json` (S3 on CloudFront; same file in the image). Live cities then call `/api/live/weather/{id}`. `GET /api/weather` on the pod still serves that JSON.
 
 See [weather-backends.md](weather-backends.md) for step-by-step flows.
 

@@ -1,6 +1,6 @@
 # Weather backends and application flows
 
-The browser loads the SPA from **CloudFront** (`make cdn`). **Live** updates call `GET /api/live/weather/{cityId}` on the **same origin** (CloudFront proxies `/api/*` to the Gateway ALB). `make app-forward` is the same `/api` paths on `localhost:8080`. Routing is implemented in `app/main/server.js`; the UI maps cities in `app/main/web/app.js`.
+The browser loads the SPA from **CloudFront** (`make cdn`). The city list is **static JSON** (`GET /data/weather.json` from S3). **Live** updates call `GET /api/live/weather/{cityId}` on the **same origin** (CloudFront proxies `/api/*` to the Gateway ALB). `make app-forward` is the same `/api` paths on `localhost:8080`; the catalog is `/data/weather.json` from the image. Routing is implemented in `app/main/server.js`; the UI maps cities in `app/main/web/app.js`.
 
 ---
 
@@ -12,8 +12,9 @@ The browser loads the SPA from **CloudFront** (`make cdn`). **Live** updates cal
 | `barcelona` | `agent` | Lambda `app/agent` via API Gateway |
 | `tel-aviv` | `agentcore` | AgentCore Runtime `app/agentcore` (Strands) |
 | `bangkok`, `tokyo` | `sqs` | Lambda `app/sqs-weather` via SQS + DynamoDB |
+| `london` | `static` | Bundled `web/data/weather.json` (UI does not call `/api/live`) |
 
-Other cities in static JSON have no live backend (`404` from `/api/live/...`).
+`GET /api/live/weather/london` has no backend (`404`). The SPA reads London from the catalog.
 
 ---
 

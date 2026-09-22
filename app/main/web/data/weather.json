@@ -61,6 +61,18 @@
       "feelsLikeC": 28,
       "humidity": 74,
       "windKph": 17
+    },
+    {
+      "id": "london",
+      "city": "London",
+      "country": "United Kingdom",
+      "timezone": "Europe/London",
+      "condition": "cloudy",
+      "conditionLabel": "Overcast",
+      "temperatureC": 14,
+      "feelsLikeC": 12,
+      "humidity": 78,
+      "windKph": 16
     }
   ]
 }

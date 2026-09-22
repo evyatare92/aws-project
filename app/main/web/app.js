@@ -1,14 +1,21 @@
-const ENDPOINT = "/api/weather";
-// Same-origin on purpose: CloudFront serves this file and proxies /api/* to EKS.
+const ENDPOINT = "/data/weather.json";
+// Catalog is static JSON. On CloudFront it comes from S3; live forecasts
+// still use same-origin /api/* (proxied to EKS).
 const CITY_SOURCES = {
   "new-york": "ecs",
   barcelona: "agent",
   "tel-aviv": "agentcore",
   bangkok: "sqs",
   tokyo: "sqs",
+  london: "static",
 };
 
 const SOURCE_COPY = {
+  static: {
+    pending: "static forecast",
+    toast: "Showing static forecast",
+    note: "Bundled placeholder data — London has no live weather backend.",
+  },
   ecs: {
     pending: "ECS weather service",
     toast: "Data received from ECS",
@@ -159,8 +166,13 @@ async function loadCityEntry(cityId) {
   const fallback = weatherData.cities.find((c) => c.id === cityId) || null;
   const source = CITY_SOURCES[cityId];
 
-  if (!fallback || !source) {
-    return { entry: fallback, live: false };
+  if (!fallback) {
+    return { entry: null, live: false };
+  }
+
+  // London (and any other static city) is served from bundled weather.json.
+  if (!source || source === "static") {
+    return { entry: fallback, live: false, source: source || "static" };
   }
 
   // Same-origin call into this app's own backend (CloudFront /api → EKS, or
@@ -185,12 +197,13 @@ async function renderSelectedCity() {
   const source = CITY_SOURCES[cityId];
   const copy = SOURCE_COPY[source];
 
-  showStatus(copy ? `Calling the ${copy.pending}…` : "Loading forecast…");
+  const isStatic = source === "static" || !source;
+  showStatus(isStatic ? "Loading static forecast…" : copy ? `Calling the ${copy.pending}…` : "Loading forecast…");
   select.disabled = true;
 
   // Stays up for as long as the request is in flight; dismissed below once we
   // know the outcome, so the two toasts read as a before and an after.
-  const pending = copy
+  const pending = !isStatic && copy
     ? showToast(
         "Calling my api server to get the information",
         `${select.options[select.selectedIndex].text} · live from ${copy.pending}`,
@@ -213,8 +226,15 @@ async function renderSelectedCity() {
         `${result.entry.city} · ${result.entry.temperatureC}°C · ${result.elapsedMs} ms`,
       );
     } else {
+      const staticCopy = SOURCE_COPY[result.source] || SOURCE_COPY.static;
       document.getElementById("status").hidden = true;
-      setSourceNote("Showing placeholder data — not a live weather feed.");
+      setSourceNote(staticCopy.note);
+      if (result.entry && result.source === "static") {
+        showToast(
+          staticCopy.toast,
+          `${result.entry.city} · ${result.entry.temperatureC}°C`,
+        );
+      }
     }
   } catch (error) {
     pending?.dismiss();

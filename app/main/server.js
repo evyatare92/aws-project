@@ -27,6 +27,7 @@ const CITY_BACKENDS = {
   "tel-aviv": "agentcore",
   bangkok: "sqs",
   tokyo: "sqs",
+  // london is catalog-only (web/data/weather.json); no live upstream.
 };
 
 const sqs = new SQSClient({ region: AWS_REGION });
