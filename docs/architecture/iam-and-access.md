@@ -286,32 +286,40 @@ Do not commit API keys; pass `ANTHROPIC_API_KEY=...` on `make lambda` when boots
 ## Summary diagram
 
 ```mermaid
-flowchart TB
-  subgraph Humans
-    Laptop["Laptop IAM identity\n(not in repo)"]
+%%{init: {"themeVariables": {"fontSize": "22px"}, "flowchart": {"nodeSpacing": 50, "rankSpacing": 280, "padding": 40}}}%%
+graph TB
+  subgraph Humans ["Humans"]
+    direction TB
+    Laptop["Laptop IAM identity<br/>not in repo"]
     EksUser["IAM user EKS-User"]
-    BastionRole["Role aws-project-dev-bastion\n+ instance profile"]
+    BastionRole["Role aws-project-dev-bastion<br/>plus instance profile"]
+    Laptop ~~~ EksUser
+    EksUser ~~~ BastionRole
   end
 
-  subgraph EKSAccess["EKS Access tab — ClusterAdmin"]
+  subgraph EKSAccess ["EKS Access tab ClusterAdmin"]
+    direction TB
     Laptop --> EKS["Cluster aws-project-dev"]
     EksUser --> EKS
     BastionRole --> EKS
   end
 
-  subgraph IRSA["IAM roles assumed via OIDC"]
+  subgraph IRSA ["IAM roles assumed via OIDC"]
+    direction TB
     MainSA["SA weather-main"]
     LBCSA["SA aws-load-balancer-controller"]
     MainRole["Role aws-project-dev-main-app"]
     LBCRole["Role aws-project-dev-lbc"]
-    MainSA -->|"annotation + trust sub"| MainRole
+    MainSA -->|annotation plus trust sub| MainRole
     LBCSA --> LBCRole
+    MainSA ~~~ LBCSA
   end
 
-  Laptop -->|"SSM"| BastionRole
-  BastionRole -->|"private API"| EKS
+  Laptop -->|SSM| BastionRole
+  BastionRole -->|private API| EKS
 
-  subgraph Services
+  subgraph Services ["Services"]
+    direction TB
     ClusterRole["Role aws-project-dev-eks-cluster"]
     NodeRole["Role aws-project-dev-eks-node"]
     EcsExec["Role aws-project-dev-ecs-execution"]
@@ -319,7 +327,17 @@ flowchart TB
     AgentL["Role aws-project-dev-agent-lambda"]
     SqsL["Role aws-project-dev-sqs-lambda"]
     AC["Role aws-project-dev-agentcore"]
+    ClusterRole ~~~ NodeRole
+    NodeRole ~~~ EcsExec
+    EcsExec ~~~ EcsTask
+    EcsTask ~~~ AgentL
+    AgentL ~~~ SqsL
+    SqsL ~~~ AC
   end
+
+  Humans ~~~ EKSAccess
+  EKSAccess ~~~ IRSA
+  IRSA ~~~ Services
 
   MainRole --> SQS["sqs:SendMessage"]
   MainRole --> DDB["dynamodb:GetItem"]
