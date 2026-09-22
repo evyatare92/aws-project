@@ -752,7 +752,7 @@ rollouts-ui:
 		exit 1; \
 	fi; \
 	echo "Forwarding localhost:$(ROLLOUTS_PORT) -> argo-rollouts-dashboard:3100 via $(BASTION_ID)"; \
-	echo "Open http://127.0.0.1:$(ROLLOUTS_PORT)"; \
+	echo "Open http://127.0.0.1:$(ROLLOUTS_PORT)/rollouts  (namespace weather)"; \
 	aws ssm start-session --region $(AWS_REGION) --target $(BASTION_ID) \
 		--document-name AWS-StartPortForwardingSessionToRemoteHost \
 		--parameters host="127.0.0.1",portNumber="$(ROLLOUTS_PORT)",localPortNumber="$(ROLLOUTS_PORT)"

@@ -7,6 +7,10 @@
 dashboard:
   enabled: true
   replicas: 1
+  # Default namespace is argo-rollouts (empty). An empty list never clears the
+  # spinner (argo-rollouts #4888). Pin to where weather-main lives.
+  extraArgs:
+    - --namespace=weather
   resources:
     requests:
       cpu: 20m
