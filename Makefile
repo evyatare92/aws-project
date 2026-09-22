@@ -36,6 +36,10 @@ LBC_CHART_VERSION    ?= 3.5.0
 GATEWAY_API_VERSION  ?= v1.2.1
 LBC_NAMESPACE        ?= kube-system
 LBC_SA               ?= aws-load-balancer-controller
+ARGOCD_CHART_VERSION ?= 10.9.2
+ARGOCD_PORT          ?= 8081
+GIT_REPO             ?= https://github.com/evyatare92/aws-project.git
+GIT_REVISION         ?= main
 
 AWS_ACCOUNT_ID := $(shell aws sts get-caller-identity --query Account --output text 2>/dev/null)
 ECR_REGISTRY   := $(AWS_ACCOUNT_ID).dkr.ecr.$(AWS_REGION).amazonaws.com
@@ -53,10 +57,11 @@ COMMON_PARAMS := ProjectName=$(PROJECT) Environment=$(ENV)
 	agentcore bastion bastion-tools connect lint outputs \
 	app-login app-build version-bump app-push app-publish app-image app-push-all \
 	charts-version charts-stage \
-	app-deploy app-helm app-forward alb lbc lbc-iam lbc-stage lbc-install \
+	app-deploy app-helm app-helm-direct app-forward alb lbc lbc-iam lbc-stage lbc-install \
+	argocd argocd-stage argocd-sync argocd-ui \
 	cdn cdn-waf cdn-infra cdn-sync \
 	destroy-registry destroy-eks destroy-ecs destroy-ecs-weather destroy-lambda destroy-agentcore \
-	destroy-bastion destroy-alb destroy-lbc destroy-cdn destroy-network destroy-nat
+	destroy-bastion destroy-alb destroy-lbc destroy-argocd destroy-cdn destroy-network destroy-nat
 
 # Order matters: nat adds IGW routes; endpoints need the VPC; compute needs both.
 # agentcore imports the Anthropic secret from the lambda stack and the ECR repo.
@@ -288,13 +293,15 @@ charts-stage: charts-version
 		--region $(AWS_REGION) --delete
 	@echo "Staged charts to s3://$(ARTIFACTS_BUCKET)/charts"
 
-# Installs the chart from the bastion, because the EKS API is private. SSM Run
-# Command is the non-interactive counterpart to "make connect".
+# Installs the chart from git via Argo CD once "make argocd" has been run.
+# Image tags still come from app/main/.version; commit and push values.yaml
+# so Argo can see the new tag. Helm-on-bastion remains "make app-helm-direct".
 app-deploy: app-push charts-stage app-helm cdn-sync
 
-app-helm:
-	@test -n "$(BASTION_ID)" || { echo "No bastion found. Run 'make bastion'."; exit 1; }
-	@echo "Deploying $(RELEASE) to namespace $(NAMESPACE) via $(BASTION_ID)"
+# Helm on the bastion (pre-Argo). Kept as a fallback if Argo CD is not installed.
+app-helm-direct:
+	@test -n "$(BASTION_ID)" || { echo "No bastion found. Run 'make bastion'."; exit 1; };
+	@echo "Deploying $(RELEASE) to namespace $(NAMESPACE) via $(BASTION_ID) (Helm)"
 	@cid=$$(aws ssm send-command --region $(AWS_REGION) \
 		--instance-ids $(BASTION_ID) \
 		--document-name AWS-RunShellScript \
@@ -325,6 +332,13 @@ app-helm:
 		exit 1; \
 	fi; \
 	echo "Deployed $(RELEASE) to namespace $(NAMESPACE)"
+
+# Prefer Argo CD (git). Falls back to Helm on the bastion if Argo is missing.
+app-helm:
+	@if $(MAKE) --no-print-directory argocd-sync; then :; else \
+		echo "Argo CD not ready. Falling back to Helm. Install with: make argocd"; \
+		$(MAKE) --no-print-directory app-helm-direct; \
+	fi
 
 # Opens http://localhost:$(LOCAL_PORT) on your PC: starts kubectl port-forward
 # on the bastion (ClusterIP), then SSM forwards to that listener. Ctrl-C stops
@@ -502,6 +516,145 @@ lbc-install: lbc-stage
 
 lbc: lbc-install
 
+# Argo CD: laptop pulls the chart (bastion originally had no GitHub), stages to
+# S3, bastion helm-installs. The weather-main Application tracks GIT_REPO.
+argocd-stage:
+	@rm -rf .build/argocd && mkdir -p .build/argocd/chart .build/tools
+	@if command -v helm >/dev/null 2>&1; then h=helm; else \
+		h=.build/tools/helm; \
+		if [ ! -x $$h ]; then \
+			curl -sSL "https://get.helm.sh/helm-$(HELM_VERSION)-linux-amd64.tar.gz" \
+				| tar -xz -C .build/tools --strip-components=1 linux-amd64/helm; \
+		fi; \
+	fi; \
+	$$h pull argo-cd \
+		--repo https://argoproj.github.io/argo-helm \
+		--version $(ARGOCD_CHART_VERSION) \
+		--untar --untardir .build/argocd && \
+	rm -rf .build/argocd/chart && mv .build/argocd/argo-cd .build/argocd/chart
+	@cp deploy/charts/argocd/values.yaml .build/argocd/values.yaml
+	@cp deploy/charts/bastion-argocd.sh .build/argocd/bastion-argocd.sh
+	@cp deploy/charts/bastion-argocd-sync.sh .build/argocd/bastion-argocd-sync.sh
+	@cp deploy/argocd/weather-main.yaml .build/argocd/weather-main.yaml
+	@sed -i -E "s|^    repoURL:.*|    repoURL: $(GIT_REPO)|" .build/argocd/weather-main.yaml
+	@sed -i -E "s|^    targetRevision:.*|    targetRevision: $(GIT_REVISION)|" .build/argocd/weather-main.yaml
+	@bash deploy/charts/write-argocd-repo-secret.sh .build/argocd/repo-secret.yaml "$(GIT_REPO)"
+	aws s3 sync .build/argocd s3://$(ARTIFACTS_BUCKET)/argocd --region $(AWS_REGION) --delete
+	@echo "Staged Argo CD chart to s3://$(ARTIFACTS_BUCKET)/argocd"
+
+argocd: argocd-stage
+	@test -n "$(BASTION_ID)" || { echo "No bastion found. Run 'make bastion'."; exit 1; }
+	@echo "Installing Argo CD via $(BASTION_ID)"
+	@cid=$$(aws ssm send-command --region $(AWS_REGION) \
+		--instance-ids $(BASTION_ID) \
+		--document-name AWS-RunShellScript \
+		--timeout-seconds 1800 \
+		--comment "install argocd" \
+		--parameters 'commands=["aws s3 cp s3://$(ARTIFACTS_BUCKET)/argocd/bastion-argocd.sh /tmp/bastion-argocd.sh --region $(AWS_REGION)","BUCKET=$(ARTIFACTS_BUCKET) CLUSTER=$(STACK_PREFIX) REGION=$(AWS_REGION) bash /tmp/bastion-argocd.sh"]' \
+		--query Command.CommandId --output text) && \
+	test -n "$$cid" || { echo "send-command returned no command id" >&2; exit 1; }; \
+	echo "SSM command $$cid"; \
+	for _ in $$(seq 1 120); do \
+		st=$$(aws ssm get-command-invocation --region $(AWS_REGION) \
+			--command-id $$cid --instance-id $(BASTION_ID) \
+			--query Status --output text 2>/dev/null) || st=Pending; \
+		case "$$st" in Success|Failed|Cancelled|TimedOut) break ;; esac; \
+		sleep 10; \
+	done; \
+	aws ssm get-command-invocation --region $(AWS_REGION) \
+		--command-id $$cid --instance-id $(BASTION_ID) \
+		--query StandardOutputContent --output text; \
+	st=$$(aws ssm get-command-invocation --region $(AWS_REGION) \
+		--command-id $$cid --instance-id $(BASTION_ID) \
+		--query Status --output text); \
+	if [ "$$st" != "Success" ]; then \
+		aws ssm get-command-invocation --region $(AWS_REGION) \
+			--command-id $$cid --instance-id $(BASTION_ID) \
+			--query StandardErrorContent --output text >&2; \
+		echo "Remote Argo CD install finished with status: $$st" >&2; \
+		exit 1; \
+	fi; \
+	echo "Argo CD installed. UI: make argocd-ui"
+
+argocd-sync:
+	@test -n "$(BASTION_ID)" || { echo "No bastion found. Run 'make bastion'."; exit 1; }
+	@mkdir -p .build
+	@aws s3 cp deploy/argocd/weather-main.yaml s3://$(ARTIFACTS_BUCKET)/argocd/weather-main.yaml --region $(AWS_REGION) >/dev/null
+	@aws s3 cp deploy/charts/bastion-argocd-sync.sh s3://$(ARTIFACTS_BUCKET)/argocd/bastion-argocd-sync.sh --region $(AWS_REGION) >/dev/null
+	@bash deploy/charts/write-argocd-repo-secret.sh .build/argocd-repo-secret.yaml "$(GIT_REPO)"; \
+	if [ -f .build/argocd-repo-secret.yaml ]; then \
+		aws s3 cp .build/argocd-repo-secret.yaml s3://$(ARTIFACTS_BUCKET)/argocd/repo-secret.yaml --region $(AWS_REGION) >/dev/null; \
+	fi
+	@echo "Refreshing Argo CD application weather-main via $(BASTION_ID)"
+	@cid=$$(aws ssm send-command --region $(AWS_REGION) \
+		--instance-ids $(BASTION_ID) \
+		--document-name AWS-RunShellScript \
+		--timeout-seconds 300 \
+		--comment "argocd sync weather-main" \
+		--parameters 'commands=["aws s3 cp s3://$(ARTIFACTS_BUCKET)/argocd/bastion-argocd-sync.sh /tmp/bastion-argocd-sync.sh --region $(AWS_REGION)","BUCKET=$(ARTIFACTS_BUCKET) CLUSTER=$(STACK_PREFIX) REGION=$(AWS_REGION) bash /tmp/bastion-argocd-sync.sh"]' \
+		--query Command.CommandId --output text) && \
+	test -n "$$cid" || { echo "send-command returned no command id" >&2; exit 1; }; \
+	echo "SSM command $$cid"; \
+	for _ in $$(seq 1 36); do \
+		st=$$(aws ssm get-command-invocation --region $(AWS_REGION) \
+			--command-id $$cid --instance-id $(BASTION_ID) \
+			--query Status --output text 2>/dev/null) || st=Pending; \
+		case "$$st" in Success|Failed|Cancelled|TimedOut) break ;; esac; \
+		sleep 5; \
+	done; \
+	aws ssm get-command-invocation --region $(AWS_REGION) \
+		--command-id $$cid --instance-id $(BASTION_ID) \
+		--query StandardOutputContent --output text; \
+	st=$$(aws ssm get-command-invocation --region $(AWS_REGION) \
+		--command-id $$cid --instance-id $(BASTION_ID) \
+		--query Status --output text); \
+	if [ "$$st" != "Success" ]; then \
+		aws ssm get-command-invocation --region $(AWS_REGION) \
+			--command-id $$cid --instance-id $(BASTION_ID) \
+			--query StandardErrorContent --output text >&2; \
+		echo "Argo CD sync finished with status: $$st" >&2; \
+		exit 1; \
+	fi
+
+argocd-ui:
+	@test -n "$(BASTION_ID)" || (echo "No bastion found. Run 'make bastion'." && exit 1)
+	@aws s3 cp deploy/charts/bastion-port-forward.sh \
+		s3://$(ARTIFACTS_BUCKET)/charts/bastion-port-forward.sh --region $(AWS_REGION) >/dev/null
+	@cid=$$(aws ssm send-command --region $(AWS_REGION) \
+		--instance-ids $(BASTION_ID) \
+		--document-name AWS-RunShellScript \
+		--timeout-seconds 120 \
+		--comment "kubectl port-forward argocd-server" \
+		--parameters 'commands=["aws s3 cp s3://$(ARTIFACTS_BUCKET)/charts/bastion-port-forward.sh /tmp/bastion-port-forward.sh --region $(AWS_REGION)","CLUSTER=$(STACK_PREFIX) REGION=$(AWS_REGION) RELEASE=argocd-server NAMESPACE=argocd SVC=argocd-server PF_PORT=$(ARGOCD_PORT) TARGET_PORT=80 bash /tmp/bastion-port-forward.sh"]' \
+		--query Command.CommandId --output text) && \
+	test -n "$$cid" || { echo "send-command returned no command id" >&2; exit 1; }; \
+	echo "SSM command $$cid (Argo CD UI on bastion)"; \
+	for _ in $$(seq 1 24); do \
+		st=$$(aws ssm get-command-invocation --region $(AWS_REGION) \
+			--command-id $$cid --instance-id $(BASTION_ID) \
+			--query Status --output text 2>/dev/null) || st=Pending; \
+		case "$$st" in Success|Failed|Cancelled|TimedOut) break ;; esac; \
+		sleep 2; \
+	done; \
+	aws ssm get-command-invocation --region $(AWS_REGION) \
+		--command-id $$cid --instance-id $(BASTION_ID) \
+		--query StandardOutputContent --output text; \
+	st=$$(aws ssm get-command-invocation --region $(AWS_REGION) \
+		--command-id $$cid --instance-id $(BASTION_ID) \
+		--query Status --output text); \
+	if [ "$$st" != "Success" ]; then \
+		aws ssm get-command-invocation --region $(AWS_REGION) \
+			--command-id $$cid --instance-id $(BASTION_ID) \
+			--query StandardErrorContent --output text >&2; \
+		echo "Argo CD port-forward setup finished with status: $$st" >&2; \
+		exit 1; \
+	fi; \
+	echo "Forwarding localhost:$(ARGOCD_PORT) -> argocd-server:80 via $(BASTION_ID)"; \
+	echo "Login user: admin   password: kubectl -n argocd get secret argocd-initial-admin-secret (printed at make argocd)"; \
+	aws ssm start-session --region $(AWS_REGION) --target $(BASTION_ID) \
+		--document-name AWS-StartPortForwardingSessionToRemoteHost \
+		--parameters host="127.0.0.1",portNumber="$(ARGOCD_PORT)",localPortNumber="$(ARGOCD_PORT)"
+
 # The bastion has no internet route, so fetch tools here and push them to S3.
 bastion-tools:
 	@tmp=$$(mktemp -d) && \
@@ -576,6 +729,26 @@ destroy-cdn:
 	aws cloudformation delete-stack --region us-east-1 --stack-name $(STACK_PREFIX)-cdn-waf || true
 	aws cloudformation wait stack-delete-complete --region us-east-1 --stack-name $(STACK_PREFIX)-cdn-waf || true
 
+# Leaves weather-main in place (orphans the Application) then uninstalls Argo CD.
+destroy-argocd:
+	@if [ -n "$(BASTION_ID)" ] && [ "$(BASTION_ID)" != "None" ]; then \
+		cid=$$(aws ssm send-command --region $(AWS_REGION) \
+			--instance-ids $(BASTION_ID) \
+			--document-name AWS-RunShellScript \
+			--timeout-seconds 600 \
+			--comment "uninstall argocd" \
+			--parameters 'commands=["export PATH=/usr/local/bin:$$PATH","export KUBECONFIG=/root/.kube/config","aws eks update-kubeconfig --name $(STACK_PREFIX) --region $(AWS_REGION) --kubeconfig /root/.kube/config","kubectl -n argocd delete application weather-main --ignore-not-found --wait=false || true","helm uninstall argocd -n argocd --wait --timeout 5m || true","kubectl delete namespace argocd --ignore-not-found --wait=false || true"]' \
+			--query Command.CommandId --output text); \
+		echo "SSM command $$cid"; \
+		aws ssm wait command-executed --region $(AWS_REGION) \
+			--command-id $$cid --instance-id $(BASTION_ID) >/dev/null 2>&1 || true; \
+		aws ssm get-command-invocation --region $(AWS_REGION) \
+			--command-id $$cid --instance-id $(BASTION_ID) \
+			--query StandardOutputContent --output text; \
+	else \
+		echo "No bastion; skipping in-cluster Argo CD uninstall."; \
+	fi
+
 # Removes Gateway objects (so the controller can delete the ALB) then the LBC
 # Helm release and its IAM role. Best-effort if the bastion is already gone.
 destroy-lbc:
@@ -600,7 +773,7 @@ destroy-lbc:
 	aws cloudformation wait stack-delete-complete --region $(AWS_REGION) --stack-name $(STACK_PREFIX)-lbc
 
 # Endpoints must go before the VPC: the VPC's exports are in use until they do.
-destroy-network: destroy-cdn destroy-lbc destroy-alb destroy-bastion destroy-eks destroy-ecs destroy-agentcore destroy-lambda destroy-nat
+destroy-network: destroy-cdn destroy-argocd destroy-lbc destroy-alb destroy-bastion destroy-eks destroy-ecs destroy-agentcore destroy-lambda destroy-nat
 	aws cloudformation delete-stack --region $(AWS_REGION) --stack-name $(STACK_PREFIX)-endpoints
 	aws cloudformation wait stack-delete-complete --region $(AWS_REGION) --stack-name $(STACK_PREFIX)-endpoints
 	aws cloudformation delete-stack --region $(AWS_REGION) --stack-name $(STACK_PREFIX)-vpc

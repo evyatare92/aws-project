@@ -8,6 +8,7 @@ This folder describes how the **aws-project** Weather Board is built and how tra
 | [architecture/network-and-routing.md](architecture/network-and-routing.md) | VPC layout, subnets, route tables, NAT, VPC endpoints, CloudFront + Gateway ALB |
 | [architecture/cdn-and-waf.md](architecture/cdn-and-waf.md) | Private S3 SPA bucket, OAC, CloudFront origins/behaviors, WAF IP allowlist |
 | [architecture/security-groups.md](architecture/security-groups.md) | Every SG: what it is attached to, inbound/outbound rules, console and CLI lookup |
+| [architecture/argocd.md](architecture/argocd.md) | Argo CD GitOps for weather-main, UI via SSM |
 | [architecture/kubernetes-and-gateway.md](architecture/kubernetes-and-gateway.md) | EKS, Helm, IRSA, Gateway API, AWS Load Balancer Controller |
 | [architecture/weather-backends.md](architecture/weather-backends.md) | Per-city backends (ECS, agent Lambda, AgentCore, SQS Lambda), API contracts, sequence flows |
 | [architecture/iam-and-access.md](architecture/iam-and-access.md) | IAM users/roles, EKS access entries, IRSA, where each assignment appears in the console or CLI |

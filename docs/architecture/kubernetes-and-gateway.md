@@ -115,13 +115,18 @@ ClusterIP is still the HTTPRoute backend; the ALB target group points at **pod E
 |---------|--------|
 | `make charts-version` | Sync chart version + image tag from `app/main/.version`; refresh URLs/roles from CFN exports |
 | `make charts-stage` | `aws s3 sync deploy/charts` → artifacts bucket |
-| `make app-helm` | SSM on bastion → `bastion-deploy.sh` → `helm upgrade --install` |
+| `make app-helm` | Argo CD refresh from git (Helm on bastion if Argo is missing) |
+| `make app-helm-direct` | SSM → `bastion-deploy.sh` → `helm upgrade --install` |
+| `make argocd` | Install Argo CD + weather-main Application |
+| `make argocd-ui` | SSM port-forward to the Argo CD UI (`localhost:8081`) |
 | `make app-deploy` | `app-push` + `charts-stage` + `app-helm` + `cdn-sync` (needs the CDN stack) |
 | `make cdn` | WAF + CloudFront/S3 + attach CloudFront SG to Gateway + `cdn-sync` |
 | `make cdn-sync` | `aws s3 sync app/main/web` + CloudFront invalidation |
 | `make app-forward` | SSM: `bastion-port-forward.sh` then tunnel to bastion loopback |
 
-After upgrade, `bastion-deploy.sh` **rollout restart** so nodes pull the pinned tag if the deployment spec did not change.
+After upgrade, Argo (or `bastion-deploy.sh` **rollout restart**) so nodes pull the pinned tag if the deployment spec did not change.
+
+See [argocd.md](argocd.md) for GitOps.
 
 ---
 

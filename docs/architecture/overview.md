@@ -111,23 +111,21 @@ Helm chart: `deploy/charts/main/` (release `weather-main`, namespace `weather`).
 sequenceDiagram
   participant Dev as Developer PC
   participant ECR as ECR
-  participant S3 as Artifacts S3
-  participant SSM as SSM Run Command
-  participant Bastion as Bastion
+  participant Git as GitHub
+  participant Argo as Argo CD
   participant EKS as EKS API
 
-  Dev->>ECR: make app-push (build + push main image)
-  Dev->>S3: make charts-stage (Helm + values sync)
-  Dev->>SSM: make app-deploy / app-helm
-  SSM->>Bastion: bastion-deploy.sh
-  Bastion->>S3: download chart
-  Bastion->>EKS: helm upgrade --install weather-main
-  Bastion->>EKS: rollout restart (immutable image tags)
+  Dev->>ECR: make app-push
+  Dev->>Git: commit values and chart
+  Git->>Argo: auto-sync weather-main
+  Argo->>EKS: Helm apply ServerSideApply
 ```
 
 - **Image tags** come from `app/main/.version` (not `latest` in cluster).
-- **Chart values** pull CloudFormation exports (agent URL, SQS URL, DynamoDB table, MainApp IRSA ARN, Gateway subnets, and after CDN the CloudFront ALB security group).
-- **EKS API is private**; Helm and `kubectl` run on the bastion (or any host inside the VPC with credentials).
+- **Chart values** pull CloudFormation exports (agent URL, SQS URL, DynamoDB table, MainApp IRSA ARN, Gateway subnets, and after CDN the CloudFront ALB security group). Commit those values so Argo sees them.
+- **EKS API is private**; Argo CD runs in-cluster. `kubectl` / Helm fallback run on the bastion.
+
+See [argocd.md](argocd.md).
 
 Public URL after `make cdn`: `https://{CloudFront domain}` (WAF allows `CLIENT_CIDR`). The Gateway ALB is only reachable from CloudFront.
 
@@ -155,6 +153,7 @@ See [weather-backends.md](weather-backends.md) for step-by-step flows.
 - [Network and routing](network-and-routing.md)
 - [CloudFront, S3, and WAF](cdn-and-waf.md)
 - [Security groups](security-groups.md)
+- [Argo CD](argocd.md)
 - [Kubernetes and Gateway](kubernetes-and-gateway.md)
 - [Weather backends](weather-backends.md)
 - [IAM and access](iam-and-access.md)

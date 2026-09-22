@@ -1,0 +1,29 @@
+# Applied by make argocd (bastion). Source of truth is git, not S3 Helm.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: weather-main
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/evyatare92/aws-project.git
+    targetRevision: main
+    path: deploy/charts/main
+    helm:
+      releaseName: weather-main
+      valueFiles:
+        - values.yaml
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: weather
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+      - RespectIgnoreDifferences=true
