@@ -1,7 +1,7 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Description: >-
-  CloudFront-scoped WAFv2 web ACL. Must be deployed in us-east-1. Allows only
-  ClientCidr so the Weather Board CDN is not world-readable.
+  CloudFront-scoped WAFv2 web ACL. Must be deployed in us-east-1. Default
+  allowlist is 81.199.0.0/16 so the Weather Board CDN is not world-readable.
 
 Parameters:
   ProjectName:
@@ -16,7 +16,8 @@ Parameters:
 
   ClientCidr:
     Type: String
-    Description: IPv4 CIDR allowed to load the CloudFront distribution (typically x.x.x.x/32).
+    Default: 81.199.0.0/16
+    Description: IPv4 CIDR allowed to load the CloudFront distribution (default ISP range; override with a /32 if needed).
     AllowedPattern: '^(\d{1,3}\.){3}\d{1,3}/\d{1,2}$'
 
 Resources:

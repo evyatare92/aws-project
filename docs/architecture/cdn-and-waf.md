@@ -109,7 +109,7 @@ Attached Web ACL: ARN from the us-east-1 stack (`WebACLId` on the distribution).
 |----------------------|--------|
 | Default root object | `index.html` |
 | HTTP version | http2 |
-| IPv6 | enabled |
+| IPv6 | **disabled** (WAF IP set is IPv4-only; AAAA would be blocked by default) |
 | Price class | `PriceClass_100` (US, Canada, Europe) |
 | Alternate domain / ACM | **None** — use the `*.cloudfront.net` name |
 | Custom error pages | **None** |
@@ -149,7 +149,7 @@ aws cloudfront get-distribution --id DIST --query Distribution.DistributionConfi
 
 | Resource | Name | What it does |
 |----------|------|----------------|
-| IP set | `aws-project-dev-frontend` | IPv4 addresses: `ClientCidr` (from `make cdn` / `CLIENT_CIDR`, typically your `/32`) |
+| IP set | `aws-project-dev-frontend` | IPv4: `ClientCidr` (default **`81.199.0.0/16`**, or `CLIENT_CIDR` / `WAF_CLIENT_CIDR`) |
 | Web ACL | `aws-project-dev-frontend` | Default **Block**. One rule. |
 
 ### Rules (exact)
@@ -159,7 +159,7 @@ aws cloudfront get-distribution --id DIST --query Distribution.DistributionConfi
 
 There are **no** AWS Managed Rules (no Core Rule Set, anonymous IP list, rate limit, geo match). This WAF is only an IP allowlist. Visibility: sampled requests + CloudWatch metric `aws-project-dev-frontend` / `allow-client-ip`.
 
-Changing your home IP: redeploy `make cdn-waf CLIENT_CIDR=x.x.x.x/32` (or full `make cdn`). The IP set is the Web ACL’s only allow source; the ALB SG does **not** use this CIDR.
+Override with `make cdn-waf CLIENT_CIDR=x.x.x.x/32` (or full `make cdn`). The IP set is the Web ACL’s only allow source; the ALB SG does **not** use this CIDR.
 
 **Console:** AWS WAF → **Web ACLs**. Switch the console region to **Global (CloudFront)** — not eu-west-1. Open `aws-project-dev-frontend` → **Rules** (default Block + allow-client-ip) → associated AWS resources (the distribution). IP set: WAF → IP sets → same name, Global.
 
@@ -193,7 +193,7 @@ A 403 from the CloudFront URL is usually WAF (wrong IP). A timeout or connection
 
 | Target | Effect |
 |--------|--------|
-| `make cdn-waf` | Deploy/update the us-east-1 Web ACL + IP set (`CLIENT_CIDR` or auto-detected public IP) |
+| `make cdn-waf` | Deploy/update the us-east-1 Web ACL + IP set (default `81.199.0.0/16`) |
 | `make cdn-infra` | S3 + OAC + distribution + ALB SG (needs Gateway ALB + WAF export + prefix list) |
 | `make cdn` | `alb` + `cdn-waf` + `cdn-infra` + Helm (attach SG) + `cdn-sync` |
 | `make cdn-sync` | Sync `app/main/web` + invalidate `/*` |

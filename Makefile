@@ -30,6 +30,8 @@ NAMESPACE  ?= weather
 LOCAL_PORT ?= 8080
 # Public Gateway ALB source. Empty means "detect this machine's public IP".
 CLIENT_CIDR ?=
+# CloudFront WAF allowlist when CLIENT_CIDR is unset.
+WAF_CLIENT_CIDR ?= 81.199.0.0/16
 LBC_CHART_VERSION    ?= 3.5.0
 GATEWAY_API_VERSION  ?= v1.2.1
 LBC_NAMESPACE        ?= kube-system
@@ -385,11 +387,7 @@ cdn: alb cdn-waf cdn-infra
 
 cdn-waf:
 	@cidr="$(CLIENT_CIDR)"; \
-	if [ -z "$$cidr" ]; then \
-		ip=$$(curl -sS https://checkip.amazonaws.com | tr -d '[:space:]'); \
-		test -n "$$ip" || { echo "Could not detect public IP. Pass CLIENT_CIDR=x.x.x.x/32"; exit 1; }; \
-		cidr="$$ip/32"; \
-	fi; \
+	if [ -z "$$cidr" ]; then cidr="$(WAF_CLIENT_CIDR)"; fi; \
 	echo "Deploying CloudFront WAF allowed from $$cidr"; \
 	aws cloudformation deploy --region us-east-1 \
 		--no-fail-on-empty-changeset \

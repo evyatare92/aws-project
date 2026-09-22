@@ -93,7 +93,7 @@ Resources:
         Comment: !Sub '${ProjectName}-${Environment} Weather Board'
         DefaultRootObject: index.html
         HttpVersion: http2
-        IPV6Enabled: true
+        IPV6Enabled: false
         PriceClass: PriceClass_100
         WebACLId: !Ref WebAclArn
         Origins:
