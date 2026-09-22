@@ -29,18 +29,24 @@ helm upgrade --install "$RELEASE" "$CHART_DIR" \
   --namespace "$NAMESPACE" --create-namespace \
   --wait --timeout 5m
 
-# Selected by label rather than name: the chart's fullname depends on how the
-# release and chart names line up.
-deployment="$(kubectl get deployment -n "$NAMESPACE" \
-  -l "app.kubernetes.io/instance=${RELEASE}" -o name | head -n 1)"
-
-if [ -n "$deployment" ]; then
-  # values.yaml pins the mutable "latest" tag, so a re-push of the same tag
-  # needs an explicit restart to be picked up.
-  kubectl rollout restart "$deployment" -n "$NAMESPACE"
-  kubectl rollout status "$deployment" -n "$NAMESPACE" --timeout=180s
+if kubectl get crd rollouts.argoproj.io >/dev/null 2>&1 && \
+   kubectl get rollout -n "$NAMESPACE" -l "app.kubernetes.io/instance=${RELEASE}" \
+     -o name 2>/dev/null | grep -q .; then
+  echo "Rollout is a canary: first image apply replaces the old Deployment."
+  echo "Later tags pause at 0% until: make rollouts-promote"
+  kubectl get rollout,svc -n "$NAMESPACE" -l "app.kubernetes.io/instance=${RELEASE}" || true
+  if command -v kubectl-argo-rollouts >/dev/null 2>&1; then
+    kubectl argo rollouts get rollout "$RELEASE" -n "$NAMESPACE" || true
+  fi
 else
-  echo "WARNING: no deployment found for release ${RELEASE}" >&2
+  deployment="$(kubectl get deployment -n "$NAMESPACE" \
+    -l "app.kubernetes.io/instance=${RELEASE}" -o name | head -n 1)"
+  if [ -n "$deployment" ]; then
+    kubectl rollout restart "$deployment" -n "$NAMESPACE"
+    kubectl rollout status "$deployment" -n "$NAMESPACE" --timeout=180s
+  else
+    echo "WARNING: no rollout or deployment found for release ${RELEASE}" >&2
+  fi
 fi
 
 kubectl get pods,svc -n "$NAMESPACE" -l "app.kubernetes.io/instance=${RELEASE}"

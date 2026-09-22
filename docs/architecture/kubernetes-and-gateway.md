@@ -29,8 +29,8 @@ Helm chart: `deploy/charts/main/`.
 |----------|----------------|
 | Namespace | `weather` |
 | Release | `weather-main` |
-| Deployment | 2 replicas, **hard** topology spread (one pod per node and per AZ when possible); **PDB** `minAvailable: 1` |
-| Service | **ClusterIP**, port 80 → container 8080 |
+| Rollout | 2 stable replicas + 1 canary during a rollout; topology spread prefers one pod per node/AZ (`ScheduleAnyway` so the canary fits on 2 nodes); **PDB** `minAvailable: 1` |
+| Service | **ClusterIP** `weather-main` (stable) and `weather-main-canary`; port 80 → container 8080 |
 | ServiceAccount | IRSA → `MainAppRole` (SQS + DynamoDB + AgentCore invoke) |
 | Probes | `GET /healthz` |
 
@@ -54,9 +54,9 @@ Public HTTP is **not** `Service type: LoadBalancer`. It is:
 2. **LoadBalancerConfiguration** — internet-facing ALB; either `sourceRanges` (direct IP lock) **or** `securityGroups` as SG ID strings (CloudFront prefix-list SG from `make cdn`), with `manageBackendSecurityGroupRules: true`
 3. **TargetGroupConfiguration** — `targetType: ip`, health check `/healthz`
 4. **Gateway** — listener HTTP :80
-5. **HTTPRoute** — `/` → Service `weather-main:80`
+5. **HTTPRoute** — `/` → Services `weather-main:80` (weight 100) and `weather-main-canary:80` (weight 0). Argo Rollouts rewrites weights during a canary.
 
-Templates: `deploy/charts/main/templates/gateway.yaml` (rendered when `gateway.sourceRange` or `gateway.securityGroupId` is set).
+Templates: `deploy/charts/main/templates/gateway.yaml` (rendered when `gateway.sourceRange` or `gateway.securityGroupId` is set). Canary details: [argo-rollouts.md](argo-rollouts.md).
 
 Public UI is **CloudFront** (`make cdn`): private S3 via OAC, `/api/*` forwarded to this ALB. Details: [cdn-and-waf.md](cdn-and-waf.md). The browser keeps same-origin `/api/...` URLs. Direct ALB access is not the browse path after CDN.
 
@@ -88,24 +88,31 @@ flowchart TB
   subgraph K8s["EKS namespace weather"]
     GW["Gateway weather-main"]
     HR["HTTPRoute"]
-    SVC["Service ClusterIP :80"]
-    POD1["Pod"]
-    POD2["Pod"]
+    SVC["Service weather-main (stable)"]
+    SVC2["Service weather-main-canary"]
+    POD1["Stable pod"]
+    POD2["Stable pod"]
+    PODC["Canary pod"]
   end
 
   LBC["aws-load-balancer-controller\nkube-system"]
+  RO["argo-rollouts"]
 
   LBC -->|"reconcile"| GW
   LBC -->|"creates"| ALB
   GW --> HR
   HR --> SVC
+  HR --> SVC2
   SVC --> POD1
   SVC --> POD2
+  SVC2 --> PODC
   ALB -->|"IP targets :8080"| POD1
   ALB --> POD2
+  ALB --> PODC
+  RO -->|"HTTPRoute weights"| HR
 ```
 
-ClusterIP is still the HTTPRoute backend; the ALB target group points at **pod ENI IPs**, not the Service ClusterIP.
+Each Service has its own ALB target group (`targetType: ip`) pointing at **pod ENI IPs**, not the ClusterIP.
 
 ---
 
@@ -118,6 +125,8 @@ ClusterIP is still the HTTPRoute backend; the ALB target group points at **pod E
 | `make app-helm` | Argo CD refresh from git (Helm on bastion if Argo is missing) |
 | `make app-helm-direct` | SSM → `bastion-deploy.sh` → `helm upgrade --install` |
 | `make argocd` | Install Argo CD + weather-main Application |
+| `make rollouts` | Install Argo Rollouts controller (needed before the chart's `Rollout` CR) |
+| `make rollouts-promote` | Advance one manual canary gate |
 | `make argocd-ui` | SSM port-forward to the Argo CD UI (`localhost:8081`) |
 | `make app-deploy` | `app-push` + `charts-stage` + `app-helm` + `cdn-sync` (needs the CDN stack) |
 | `make cdn` | WAF + CloudFront/S3 + attach CloudFront SG to Gateway + `cdn-sync` |
@@ -126,7 +135,7 @@ ClusterIP is still the HTTPRoute backend; the ALB target group points at **pod E
 
 After upgrade, Argo (or `bastion-deploy.sh` **rollout restart**) so nodes pull the pinned tag if the deployment spec did not change.
 
-See [argocd.md](argocd.md) for GitOps.
+See [argocd.md](argocd.md) for GitOps and [argo-rollouts.md](argo-rollouts.md) for canary promotes.
 
 ---
 

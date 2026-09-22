@@ -38,6 +38,8 @@ LBC_NAMESPACE        ?= kube-system
 LBC_SA               ?= aws-load-balancer-controller
 ARGOCD_CHART_VERSION ?= 10.9.2
 ARGOCD_PORT          ?= 8081
+ROLLOUTS_CHART_VERSION ?= 2.43.2
+ROLLOUTS_VERSION       ?= v1.10.0
 GIT_REPO             ?= https://github.com/evyatare92/aws-project.git
 GIT_REVISION         ?= main
 
@@ -59,9 +61,10 @@ COMMON_PARAMS := ProjectName=$(PROJECT) Environment=$(ENV)
 	charts-version charts-stage \
 	app-deploy app-helm app-helm-direct app-forward alb lbc lbc-iam lbc-stage lbc-install \
 	argocd argocd-stage argocd-sync argocd-ui \
+	rollouts rollouts-stage rollouts-promote rollouts-abort rollouts-status rollouts-cmd \
 	cdn cdn-waf cdn-infra cdn-sync \
 	destroy-registry destroy-eks destroy-ecs destroy-ecs-weather destroy-lambda destroy-agentcore \
-	destroy-bastion destroy-alb destroy-lbc destroy-argocd destroy-cdn destroy-network destroy-nat
+	destroy-bastion destroy-alb destroy-lbc destroy-argocd destroy-rollouts destroy-cdn destroy-network destroy-nat
 
 # Order matters: nat adds IGW routes; endpoints need the VPC; compute needs both.
 # agentcore imports the Anthropic secret from the lambda stack and the ECR repo.
@@ -655,6 +658,110 @@ argocd-ui:
 		--document-name AWS-StartPortForwardingSessionToRemoteHost \
 		--parameters host="127.0.0.1",portNumber="$(ARGOCD_PORT)",localPortNumber="$(ARGOCD_PORT)"
 
+# Argo Rollouts: laptop pulls the chart + kubectl plugin, stages to S3,
+# bastion helm-installs. Canary traffic split uses the Gateway API plugin.
+rollouts-stage:
+	@rm -rf .build/argo-rollouts && mkdir -p .build/argo-rollouts/chart .build/tools
+	@if command -v helm >/dev/null 2>&1; then h=helm; else \
+		h=.build/tools/helm; \
+		if [ ! -x $$h ]; then \
+			curl -sSL "https://get.helm.sh/helm-$(HELM_VERSION)-linux-amd64.tar.gz" \
+				| tar -xz -C .build/tools --strip-components=1 linux-amd64/helm; \
+		fi; \
+	fi; \
+	$$h pull argo-rollouts \
+		--repo https://argoproj.github.io/argo-helm \
+		--version $(ROLLOUTS_CHART_VERSION) \
+		--untar --untardir .build/argo-rollouts && \
+	rm -rf .build/argo-rollouts/chart && mv .build/argo-rollouts/argo-rollouts .build/argo-rollouts/chart
+	@cp deploy/charts/argo-rollouts/values.yaml .build/argo-rollouts/values.yaml
+	@cp deploy/charts/bastion-argo-rollouts.sh .build/argo-rollouts/bastion-argo-rollouts.sh
+	@cp deploy/charts/bastion-argo-rollouts-cmd.sh .build/argo-rollouts/bastion-argo-rollouts-cmd.sh
+	curl -sSLo .build/argo-rollouts/kubectl-argo-rollouts \
+		"https://github.com/argoproj/argo-rollouts/releases/download/$(ROLLOUTS_VERSION)/kubectl-argo-rollouts-linux-amd64"
+	chmod +x .build/argo-rollouts/kubectl-argo-rollouts
+	aws s3 sync .build/argo-rollouts s3://$(ARTIFACTS_BUCKET)/argo-rollouts --region $(AWS_REGION) --delete
+	@echo "Staged Argo Rollouts chart to s3://$(ARTIFACTS_BUCKET)/argo-rollouts"
+
+rollouts: rollouts-stage
+	@test -n "$(BASTION_ID)" || { echo "No bastion found. Run 'make bastion'."; exit 1; }
+	@echo "Installing Argo Rollouts via $(BASTION_ID)"
+	@cid=$$(aws ssm send-command --region $(AWS_REGION) \
+		--instance-ids $(BASTION_ID) \
+		--document-name AWS-RunShellScript \
+		--timeout-seconds 1800 \
+		--comment "install argo-rollouts" \
+		--parameters 'commands=["aws s3 cp s3://$(ARTIFACTS_BUCKET)/argo-rollouts/bastion-argo-rollouts.sh /tmp/bastion-argo-rollouts.sh --region $(AWS_REGION)","BUCKET=$(ARTIFACTS_BUCKET) CLUSTER=$(STACK_PREFIX) REGION=$(AWS_REGION) bash /tmp/bastion-argo-rollouts.sh"]' \
+		--query Command.CommandId --output text) && \
+	test -n "$$cid" || { echo "send-command returned no command id" >&2; exit 1; }; \
+	echo "SSM command $$cid"; \
+	for _ in $$(seq 1 120); do \
+		st=$$(aws ssm get-command-invocation --region $(AWS_REGION) \
+			--command-id $$cid --instance-id $(BASTION_ID) \
+			--query Status --output text 2>/dev/null) || st=Pending; \
+		case "$$st" in Success|Failed|Cancelled|TimedOut) break ;; esac; \
+		sleep 10; \
+	done; \
+	aws ssm get-command-invocation --region $(AWS_REGION) \
+		--command-id $$cid --instance-id $(BASTION_ID) \
+		--query StandardOutputContent --output text; \
+	st=$$(aws ssm get-command-invocation --region $(AWS_REGION) \
+		--command-id $$cid --instance-id $(BASTION_ID) \
+		--query Status --output text); \
+	if [ "$$st" != "Success" ]; then \
+		aws ssm get-command-invocation --region $(AWS_REGION) \
+			--command-id $$cid --instance-id $(BASTION_ID) \
+			--query StandardErrorContent --output text >&2; \
+		echo "Remote Argo Rollouts install finished with status: $$st" >&2; \
+		exit 1; \
+	fi; \
+	echo "Argo Rollouts installed. Promote: make rollouts-promote"
+
+rollouts-promote:
+	@$(MAKE) --no-print-directory rollouts-cmd ACTION=promote
+
+rollouts-abort:
+	@$(MAKE) --no-print-directory rollouts-cmd ACTION=abort
+
+rollouts-status:
+	@$(MAKE) --no-print-directory rollouts-cmd ACTION=status
+
+rollouts-cmd:
+	@test -n "$(BASTION_ID)" || { echo "No bastion found. Run 'make bastion'."; exit 1; }
+	@test -n "$(ACTION)" || { echo "ACTION=promote|abort|status is required"; exit 1; }
+	@aws s3 cp deploy/charts/bastion-argo-rollouts-cmd.sh \
+		s3://$(ARTIFACTS_BUCKET)/argo-rollouts/bastion-argo-rollouts-cmd.sh --region $(AWS_REGION) >/dev/null
+	@echo "Argo Rollouts $(ACTION) via $(BASTION_ID)"
+	@cid=$$(aws ssm send-command --region $(AWS_REGION) \
+		--instance-ids $(BASTION_ID) \
+		--document-name AWS-RunShellScript \
+		--timeout-seconds 180 \
+		--comment "argo-rollouts $(ACTION)" \
+		--parameters 'commands=["aws s3 cp s3://$(ARTIFACTS_BUCKET)/argo-rollouts/bastion-argo-rollouts-cmd.sh /tmp/bastion-argo-rollouts-cmd.sh --region $(AWS_REGION)","BUCKET=$(ARTIFACTS_BUCKET) CLUSTER=$(STACK_PREFIX) REGION=$(AWS_REGION) NAMESPACE=$(NAMESPACE) RELEASE=$(RELEASE) ACTION=$(ACTION) bash /tmp/bastion-argo-rollouts-cmd.sh"]' \
+		--query Command.CommandId --output text) && \
+	test -n "$$cid" || { echo "send-command returned no command id" >&2; exit 1; }; \
+	echo "SSM command $$cid"; \
+	for _ in $$(seq 1 36); do \
+		st=$$(aws ssm get-command-invocation --region $(AWS_REGION) \
+			--command-id $$cid --instance-id $(BASTION_ID) \
+			--query Status --output text 2>/dev/null) || st=Pending; \
+		case "$$st" in Success|Failed|Cancelled|TimedOut) break ;; esac; \
+		sleep 5; \
+	done; \
+	aws ssm get-command-invocation --region $(AWS_REGION) \
+		--command-id $$cid --instance-id $(BASTION_ID) \
+		--query StandardOutputContent --output text; \
+	st=$$(aws ssm get-command-invocation --region $(AWS_REGION) \
+		--command-id $$cid --instance-id $(BASTION_ID) \
+		--query Status --output text); \
+	if [ "$$st" != "Success" ]; then \
+		aws ssm get-command-invocation --region $(AWS_REGION) \
+			--command-id $$cid --instance-id $(BASTION_ID) \
+			--query StandardErrorContent --output text >&2; \
+		echo "Argo Rollouts $(ACTION) finished with status: $$st" >&2; \
+		exit 1; \
+	fi
+
 # The bastion has no internet route, so fetch tools here and push them to S3.
 bastion-tools:
 	@tmp=$$(mktemp -d) && \
@@ -729,6 +836,26 @@ destroy-cdn:
 	aws cloudformation delete-stack --region us-east-1 --stack-name $(STACK_PREFIX)-cdn-waf || true
 	aws cloudformation wait stack-delete-complete --region us-east-1 --stack-name $(STACK_PREFIX)-cdn-waf || true
 
+# Leaves weather-main ReplicaSets in place; does not delete Rollout CRDs.
+destroy-rollouts:
+	@if [ -n "$(BASTION_ID)" ] && [ "$(BASTION_ID)" != "None" ]; then \
+		cid=$$(aws ssm send-command --region $(AWS_REGION) \
+			--instance-ids $(BASTION_ID) \
+			--document-name AWS-RunShellScript \
+			--timeout-seconds 600 \
+			--comment "uninstall argo-rollouts" \
+			--parameters 'commands=["export PATH=/usr/local/bin:$$PATH","export KUBECONFIG=/root/.kube/config","aws eks update-kubeconfig --name $(STACK_PREFIX) --region $(AWS_REGION) --kubeconfig /root/.kube/config","helm uninstall argo-rollouts -n argo-rollouts --wait --timeout 5m || true","kubectl delete namespace argo-rollouts --ignore-not-found --wait=false || true"]' \
+			--query Command.CommandId --output text); \
+		echo "SSM command $$cid"; \
+		aws ssm wait command-executed --region $(AWS_REGION) \
+			--command-id $$cid --instance-id $(BASTION_ID) >/dev/null 2>&1 || true; \
+		aws ssm get-command-invocation --region $(AWS_REGION) \
+			--command-id $$cid --instance-id $(BASTION_ID) \
+			--query StandardOutputContent --output text; \
+	else \
+		echo "No bastion; skipping in-cluster Argo Rollouts uninstall."; \
+	fi
+
 # Leaves weather-main in place (orphans the Application) then uninstalls Argo CD.
 destroy-argocd:
 	@if [ -n "$(BASTION_ID)" ] && [ "$(BASTION_ID)" != "None" ]; then \
@@ -773,7 +900,7 @@ destroy-lbc:
 	aws cloudformation wait stack-delete-complete --region $(AWS_REGION) --stack-name $(STACK_PREFIX)-lbc
 
 # Endpoints must go before the VPC: the VPC's exports are in use until they do.
-destroy-network: destroy-cdn destroy-argocd destroy-lbc destroy-alb destroy-bastion destroy-eks destroy-ecs destroy-agentcore destroy-lambda destroy-nat
+destroy-network: destroy-cdn destroy-argocd destroy-rollouts destroy-lbc destroy-alb destroy-bastion destroy-eks destroy-ecs destroy-agentcore destroy-lambda destroy-nat
 	aws cloudformation delete-stack --region $(AWS_REGION) --stack-name $(STACK_PREFIX)-endpoints
 	aws cloudformation wait stack-delete-complete --region $(AWS_REGION) --stack-name $(STACK_PREFIX)-endpoints
 	aws cloudformation delete-stack --region $(AWS_REGION) --stack-name $(STACK_PREFIX)-vpc

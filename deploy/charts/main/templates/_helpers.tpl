@@ -38,3 +38,7 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- define "main.image" -}}
 {{- printf "%s:%s" .Values.image.repository (default .Chart.AppVersion .Values.image.tag) -}}
 {{- end -}}
+
+{{- define "main.canaryServiceName" -}}
+{{- printf "%s-canary" (include "main.fullname" .) -}}
+{{- end -}}

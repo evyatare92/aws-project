@@ -1,11 +1,12 @@
-apiVersion: apps/v1
-kind: Deployment
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
 metadata:
   name: {{ include "main.fullname" . }}
   labels:
     {{- include "main.labels" . | nindent 4 }}
 spec:
   replicas: {{ .Values.replicaCount }}
+  revisionHistoryLimit: 2
   selector:
     matchLabels:
       {{- include "main.selectorLabels" . | nindent 6 }}
@@ -64,17 +65,18 @@ spec:
       volumes:
         - name: tmp
           emptyDir: {}
-      # Hard spread: one replica per node and per AZ when the cluster can satisfy it.
+      # Prefer one replica per node/AZ. ScheduleAnyway so a canary pod can
+      # still land on the two-node group (DoNotSchedule would leave it Pending).
       topologySpreadConstraints:
         - maxSkew: 1
           topologyKey: kubernetes.io/hostname
-          whenUnsatisfiable: DoNotSchedule
+          whenUnsatisfiable: ScheduleAnyway
           labelSelector:
             matchLabels:
               {{- include "main.selectorLabels" . | nindent 14 }}
         - maxSkew: 1
           topologyKey: topology.kubernetes.io/zone
-          whenUnsatisfiable: DoNotSchedule
+          whenUnsatisfiable: ScheduleAnyway
           labelSelector:
             matchLabels:
               {{- include "main.selectorLabels" . | nindent 14 }}
@@ -90,3 +92,21 @@ spec:
       affinity:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+  strategy:
+    canary:
+      stableService: {{ include "main.fullname" . }}
+      canaryService: {{ include "main.canaryServiceName" . }}
+      trafficRouting:
+        plugins:
+          argoproj-labs/gatewayAPI:
+            httpRoute: {{ include "main.fullname" . }}
+            namespace: {{ .Release.Namespace }}
+      steps:
+        - setCanaryScale:
+            replicas: {{ .Values.canary.replicaCount }}
+        - pause: {}
+        - setWeight: 25
+        - pause: {}
+        - setWeight: 50
+        - pause:
+            duration: {{ .Values.canary.autoPromoteAfter | quote }}

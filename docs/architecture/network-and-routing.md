@@ -116,7 +116,8 @@ Republish the SPA with `make cdn-sync` after UI changes (S3 sync + CloudFront in
 | `weather.{ProjectName}-{Environment}.local` | ECS task IPs (Cloud Map) | Main app pods (`WEATHER_SERVICE_URL`) |
 | `{api-id}.execute-api.{region}.amazonaws.com` | Private API Gateway (via **execute-api** endpoint DNS) | Main app pods (`AGENT_SERVICE_URL`) |
 | `bedrock-agentcore.{region}.amazonaws.com` | AgentCore data plane (via **bedrock-agentcore** endpoint) | Main app pods (`InvokeAgentRuntime`) |
-| Kubernetes Service `weather-main.weather.svc` | ClusterIP | In-cluster only; HTTPRoute backend |
+| Kubernetes Service `weather-main.weather.svc` | ClusterIP | Stable HTTPRoute backend; `app-forward` |
+| Kubernetes Service `weather-main-canary.weather.svc` | ClusterIP | Canary HTTPRoute backend (weight 0 until a rollout) |
 
 Cloud Map is **private DNS inside the VPC**; your laptop cannot resolve it without being in the VPC (use the CloudFront URL or `app-forward`).
 

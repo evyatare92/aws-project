@@ -119,13 +119,14 @@ sequenceDiagram
   Dev->>Git: commit values and chart
   Git->>Argo: auto-sync weather-main
   Argo->>EKS: Helm apply ServerSideApply
+  Note over EKS: canary pauses at 0% then 25%
 ```
 
 - **Image tags** come from `app/main/.version` (not `latest` in cluster).
 - **Chart values** pull CloudFormation exports (agent URL, SQS URL, DynamoDB table, MainApp IRSA ARN, Gateway subnets, and after CDN the CloudFront ALB security group). Commit those values so Argo sees them.
 - **EKS API is private**; Argo CD runs in-cluster. `kubectl` / Helm fallback run on the bastion.
 
-See [argocd.md](argocd.md).
+See [argocd.md](argocd.md) and [argo-rollouts.md](argo-rollouts.md).
 
 Public URL after `make cdn`: `https://{CloudFront domain}` (WAF allows `CLIENT_CIDR`). The Gateway ALB is only reachable from CloudFront.
 
@@ -154,6 +155,7 @@ See [weather-backends.md](weather-backends.md) for step-by-step flows.
 - [CloudFront, S3, and WAF](cdn-and-waf.md)
 - [Security groups](security-groups.md)
 - [Argo CD](argocd.md)
+- [Argo Rollouts](argo-rollouts.md)
 - [Kubernetes and Gateway](kubernetes-and-gateway.md)
 - [Weather backends](weather-backends.md)
 - [IAM and access](iam-and-access.md)

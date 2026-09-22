@@ -51,6 +51,25 @@ spec:
       matcher:
         httpCode: "200"
 ---
+apiVersion: gateway.k8s.aws/v1
+kind: TargetGroupConfiguration
+metadata:
+  name: {{ include "main.canaryServiceName" . }}
+  labels:
+    {{- include "main.labels" . | nindent 4 }}
+    app.kubernetes.io/component: canary
+spec:
+  targetReference:
+    kind: Service
+    name: {{ include "main.canaryServiceName" . }}
+  defaultConfiguration:
+    targetType: ip
+    healthCheckConfig:
+      healthCheckPath: {{ .Values.gateway.healthCheckPath | quote }}
+      healthCheckProtocol: HTTP
+      matcher:
+        httpCode: "200"
+---
 apiVersion: gateway.networking.k8s.io/v1
 kind: Gateway
 metadata:
@@ -86,4 +105,8 @@ spec:
     - backendRefs:
         - name: {{ include "main.fullname" . }}
           port: {{ .Values.service.port }}
+          weight: 100
+        - name: {{ include "main.canaryServiceName" . }}
+          port: {{ .Values.service.port }}
+          weight: 0
 {{- end }}

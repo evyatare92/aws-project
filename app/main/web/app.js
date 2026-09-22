@@ -12,7 +12,7 @@ const SOURCE_COPY = {
   ecs: {
     pending: "ECS weather service",
     toast: "Data received from ECS",
-    note: "Live data from the ECS weather service (Open-Meteo upstream) 11111.",
+    note: "Live data from the ECS weather service (Open-Meteo upstream).",
   },
   agent: {
     pending: "Lambda weather agent",

@@ -27,3 +27,15 @@ spec:
       - CreateNamespace=true
       - ServerSideApply=true
       - RespectIgnoreDifferences=true
+  # Rollouts (and the Gateway API plugin) patch Service selectors and HTTPRoute
+  # weights during a canary. Without this, Argo CD selfHeal snaps traffic to 100/0.
+  ignoreDifferences:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      jqPathExpressions:
+        - .spec.rules
+        - .metadata.labels
+    - group: ""
+      kind: Service
+      jsonPointers:
+        - /spec/selector

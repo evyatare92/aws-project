@@ -1,0 +1,40 @@
+# Sized for the two t3.small nodes. Dashboard stays off; promote with
+# "make rollouts-promote". Gateway API traffic splitting uses the plugin
+# (copied from ghcr into the controller pod so we do not download GitHub
+# from the cluster on every restart).
+#
+# Chart: argo-rollouts 2.43.2 (app v1.10.0). Plugin image v0.17.0.
+
+dashboard:
+  enabled: false
+
+controller:
+  replicas: 1
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      memory: 256Mi
+  initContainers:
+    - name: copy-gatewayapi-plugin
+      image: ghcr.io/argoproj-labs/rollouts-plugin-trafficrouter-gatewayapi:v0.17.0
+      command: ["/bin/sh", "-c"]
+      args:
+        - cp /bin/rollouts-plugin-trafficrouter-gatewayapi /plugins
+      volumeMounts:
+        - name: gatewayapi-plugin
+          mountPath: /plugins
+  trafficRouterPlugins:
+    - name: argoproj-labs/gatewayAPI
+      location: file:///plugins/rollouts-plugin-trafficrouter-gatewayapi
+  volumes:
+    - name: gatewayapi-plugin
+      emptyDir: {}
+  volumeMounts:
+    - name: gatewayapi-plugin
+      mountPath: /plugins
+
+providerRBAC:
+  providers:
+    gatewayAPI: true

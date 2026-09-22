@@ -30,7 +30,7 @@ Printed once: admin password from `argocd-initial-admin-secret`. User is `admin`
 | `make argocd-ui` | UI at http://127.0.0.1:8081 |
 | `make app-helm-direct` | Old path: Helm upgrade from S3 on the bastion |
 
-Auto-sync is on (`prune` + `selfHeal`). The cluster follows **origin/main**, not uncommitted local files.
+Auto-sync is on (`prune` + `selfHeal`). The cluster follows **origin/main**, not uncommitted local files. New image tags start an Argo Rollouts **canary** (see [argo-rollouts.md](argo-rollouts.md)); `make rollouts-promote` is the manual gate.
 
 ---
 
