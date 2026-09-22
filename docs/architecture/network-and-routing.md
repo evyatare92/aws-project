@@ -33,44 +33,37 @@ Public subnets (NAT stack) are tagged:
 
 ```mermaid
 flowchart LR
-  subgraph AppRT["App route tables (per AZ)"]
+  subgraph AppRT["App route tables per AZ"]
     AppA["app-a RT"]
     AppB["app-b RT"]
     AppC["app-c RT"]
   end
 
   subgraph IsolatedRT["Isolated RT"]
-    Data["data subnets"]
-    EP["endpoint subnets"]
+    Data["data subnets local only"]
+    EP["endpoint subnets local plus VPCE"]
   end
 
   subgraph PublicRT["NAT public RT"]
     PubA["pub subnet a"]
+    NATA["NAT GW a"]
     PubB["pub subnet b"]
+    NATB["NAT GW b"]
     PubC["pub subnet c"]
+    NATC["NAT GW c"]
   end
 
   IGW["Internet Gateway"]
-  NATA["NAT GW a"]
-  NATB["NAT GW b"]
-  NATC["NAT GW c"]
 
-  AppA -->|"0.0.0.0/0"| NATA
-  AppB --> NATB
-  AppC --> NATC
+  AppA -->|"default route"| NATA
+  AppB -->|"default route"| NATB
+  AppC -->|"default route"| NATC
   NATA --> IGW
   NATB --> IGW
   NATC --> IGW
-  NATA --- PubA
-  NATB --- PubB
-  NATC --- PubC
-
   PubA --> IGW
   PubB --> IGW
   PubC --> IGW
-
-  Data -->|"local only"| Data
-  EP -->|"local + VPCE"| EP
 ```
 
 **Before `make nat`:** app route tables have **no default route** to the internet. Workloads reach AWS APIs via **VPC endpoints** only.
