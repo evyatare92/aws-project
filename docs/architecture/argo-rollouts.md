@@ -8,7 +8,7 @@ Install the controller **before** Argo CD syncs the chart (the `Rollout` CRD mus
 make rollouts
 ```
 
-Same install pattern as Argo CD: Helm chart pulled on your laptop, staged to S3, bastion installs. Namespace `argo-rollouts`. Dashboard is off (two `t3.small` nodes). The Gateway API traffic plugin is copied from `ghcr.io` into the controller pod.
+Same install pattern as Argo CD: Helm chart pulled on your laptop, staged to S3, bastion installs. Namespace `argo-rollouts`. Dashboard is ClusterIP only; `make rollouts-ui` port-forwards it to http://127.0.0.1:3100. The Gateway API traffic plugin is copied from `ghcr.io` into the controller pod.
 
 ---
 
@@ -47,7 +47,8 @@ Stable stays 2 replicas. Canary adds **one** extra pod (`canary.replicaCount`). 
 
 | Command | Effect |
 |---------|--------|
-| `make rollouts` | Install / upgrade the controller |
+| `make rollouts` | Install / upgrade the controller + dashboard |
+| `make rollouts-ui` | Dashboard at http://127.0.0.1:3100 (SSM port-forward) |
 | git push of a new `image.tag` | Starts a canary (paused at 0%) |
 | `make rollouts-promote` | Advance one manual gate |
 | `make rollouts-abort` | Fail the canary, keep stable |

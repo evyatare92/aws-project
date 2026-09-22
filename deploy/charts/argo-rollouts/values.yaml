@@ -1,12 +1,18 @@
-# Sized for the two t3.small nodes. Dashboard stays off; promote with
-# "make rollouts-promote". Gateway API traffic splitting uses the plugin
-# (copied from ghcr into the controller pod so we do not download GitHub
-# from the cluster on every restart).
+# Sized for the two t3.small nodes. Dashboard is ClusterIP only;
+# "make rollouts-ui" port-forwards it (same pattern as argocd-ui).
+# Gateway API plugin is copied from ghcr into the controller pod.
 #
 # Chart: argo-rollouts 2.43.2 (app v1.10.0). Plugin image v0.17.0.
 
 dashboard:
-  enabled: false
+  enabled: true
+  replicas: 1
+  resources:
+    requests:
+      cpu: 20m
+      memory: 32Mi
+    limits:
+      memory: 128Mi
 
 controller:
   replicas: 1

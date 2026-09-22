@@ -35,6 +35,7 @@ helm upgrade --install argo-rollouts "${ROLLOUTS_DIR}/chart" \
   --wait --timeout 10m
 
 kubectl -n argo-rollouts rollout status deploy/argo-rollouts --timeout=180s
-kubectl -n argo-rollouts get pods
+kubectl -n argo-rollouts rollout status deploy/argo-rollouts-dashboard --timeout=180s || true
+kubectl -n argo-rollouts get pods,svc
 kubectl get crd rollouts.argoproj.io
-echo "Argo Rollouts installed. Promote: make rollouts-promote"
+echo "Argo Rollouts installed. UI: make rollouts-ui   Promote: make rollouts-promote"

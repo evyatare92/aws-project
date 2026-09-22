@@ -125,8 +125,9 @@ Each Service has its own ALB target group (`targetType: ip`) pointing at **pod E
 | `make app-helm` | Argo CD refresh from git (Helm on bastion if Argo is missing) |
 | `make app-helm-direct` | SSM → `bastion-deploy.sh` → `helm upgrade --install` |
 | `make argocd` | Install Argo CD + weather-main Application |
-| `make rollouts` | Install Argo Rollouts controller (needed before the chart's `Rollout` CR) |
+| `make rollouts` | Install Argo Rollouts controller + dashboard (needed before the chart's `Rollout` CR) |
 | `make rollouts-promote` | Advance one manual canary gate |
+| `make rollouts-ui` | SSM port-forward to the Rollouts dashboard (`localhost:3100`) |
 | `make argocd-ui` | SSM port-forward to the Argo CD UI (`localhost:8081`) |
 | `make app-deploy` | `app-push` + `charts-stage` + `app-helm` + `cdn-sync` (needs the CDN stack) |
 | `make cdn` | WAF + CloudFront/S3 + attach CloudFront SG to Gateway + `cdn-sync` |

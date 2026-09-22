@@ -40,6 +40,7 @@ ARGOCD_CHART_VERSION ?= 10.9.2
 ARGOCD_PORT          ?= 8081
 ROLLOUTS_CHART_VERSION ?= 2.43.2
 ROLLOUTS_VERSION       ?= v1.10.0
+ROLLOUTS_PORT          ?= 3100
 GIT_REPO             ?= https://github.com/evyatare92/aws-project.git
 GIT_REVISION         ?= main
 
@@ -61,7 +62,7 @@ COMMON_PARAMS := ProjectName=$(PROJECT) Environment=$(ENV)
 	charts-version charts-stage \
 	app-deploy app-helm app-helm-direct app-forward alb lbc lbc-iam lbc-stage lbc-install \
 	argocd argocd-stage argocd-sync argocd-ui \
-	rollouts rollouts-stage rollouts-promote rollouts-abort rollouts-status rollouts-cmd \
+	rollouts rollouts-stage rollouts-promote rollouts-abort rollouts-status rollouts-cmd rollouts-ui \
 	cdn cdn-waf cdn-infra cdn-sync \
 	destroy-registry destroy-eks destroy-ecs destroy-ecs-weather destroy-lambda destroy-agentcore \
 	destroy-bastion destroy-alb destroy-lbc destroy-argocd destroy-rollouts destroy-cdn destroy-network destroy-nat
@@ -715,7 +716,46 @@ rollouts: rollouts-stage
 		echo "Remote Argo Rollouts install finished with status: $$st" >&2; \
 		exit 1; \
 	fi; \
-	echo "Argo Rollouts installed. Promote: make rollouts-promote"
+	echo "Argo Rollouts installed. UI: make rollouts-ui  Promote: make rollouts-promote"
+
+rollouts-ui:
+	@test -n "$(BASTION_ID)" || (echo "No bastion found. Run 'make bastion'." && exit 1)
+	@aws s3 cp deploy/charts/bastion-port-forward.sh \
+		s3://$(ARTIFACTS_BUCKET)/charts/bastion-port-forward.sh --region $(AWS_REGION) >/dev/null
+	@cid=$$(aws ssm send-command --region $(AWS_REGION) \
+		--instance-ids $(BASTION_ID) \
+		--document-name AWS-RunShellScript \
+		--timeout-seconds 120 \
+		--comment "kubectl port-forward argo-rollouts-dashboard" \
+		--parameters 'commands=["aws s3 cp s3://$(ARTIFACTS_BUCKET)/charts/bastion-port-forward.sh /tmp/bastion-port-forward.sh --region $(AWS_REGION)","CLUSTER=$(STACK_PREFIX) REGION=$(AWS_REGION) RELEASE=argo-rollouts-dashboard NAMESPACE=argo-rollouts SVC=argo-rollouts-dashboard PF_PORT=$(ROLLOUTS_PORT) TARGET_PORT=3100 bash /tmp/bastion-port-forward.sh"]' \
+		--query Command.CommandId --output text) && \
+	test -n "$$cid" || { echo "send-command returned no command id" >&2; exit 1; }; \
+	echo "SSM command $$cid (Argo Rollouts UI on bastion)"; \
+	for _ in $$(seq 1 24); do \
+		st=$$(aws ssm get-command-invocation --region $(AWS_REGION) \
+			--command-id $$cid --instance-id $(BASTION_ID) \
+			--query Status --output text 2>/dev/null) || st=Pending; \
+		case "$$st" in Success|Failed|Cancelled|TimedOut) break ;; esac; \
+		sleep 2; \
+	done; \
+	aws ssm get-command-invocation --region $(AWS_REGION) \
+		--command-id $$cid --instance-id $(BASTION_ID) \
+		--query StandardOutputContent --output text; \
+	st=$$(aws ssm get-command-invocation --region $(AWS_REGION) \
+		--command-id $$cid --instance-id $(BASTION_ID) \
+		--query Status --output text); \
+	if [ "$$st" != "Success" ]; then \
+		aws ssm get-command-invocation --region $(AWS_REGION) \
+			--command-id $$cid --instance-id $(BASTION_ID) \
+			--query StandardErrorContent --output text >&2; \
+		echo "Argo Rollouts port-forward setup finished with status: $$st" >&2; \
+		exit 1; \
+	fi; \
+	echo "Forwarding localhost:$(ROLLOUTS_PORT) -> argo-rollouts-dashboard:3100 via $(BASTION_ID)"; \
+	echo "Open http://127.0.0.1:$(ROLLOUTS_PORT)"; \
+	aws ssm start-session --region $(AWS_REGION) --target $(BASTION_ID) \
+		--document-name AWS-StartPortForwardingSessionToRemoteHost \
+		--parameters host="127.0.0.1",portNumber="$(ROLLOUTS_PORT)",localPortNumber="$(ROLLOUTS_PORT)"
 
 rollouts-promote:
 	@$(MAKE) --no-print-directory rollouts-cmd ACTION=promote
