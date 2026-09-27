@@ -948,5 +948,6 @@ destroy-network:
 	aws cloudformation delete-stack --region $(AWS_REGION) --stack-name $(STACK_PREFIX)-endpoints
 	aws cloudformation wait stack-delete-complete --region $(AWS_REGION) --stack-name $(STACK_PREFIX)-endpoints
 	aws cloudformation delete-stack --region $(AWS_REGION) --stack-name $(STACK_PREFIX)-vpc
+	aws cloudformation wait stack-delete-complete --region $(AWS_REGION) --stack-name $(STACK_PREFIX)-vpc
 
 destroy-all: destroy-lbc destroy-cdn destroy-alb destroy-bastion destroy-agentcore destroy-lambda destroy-eks destroy-ecs destroy-nat destroy-registry destroy-network destroy-bootstrap
