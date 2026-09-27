@@ -856,6 +856,10 @@ destroy-agentcore:
 	aws cloudformation delete-stack --region $(AWS_REGION) --stack-name $(STACK_PREFIX)-agentcore
 	aws cloudformation wait stack-delete-complete --region $(AWS_REGION) --stack-name $(STACK_PREFIX)-agentcore
 
+destroy-bootstrap:
+	aws cloudformation delete-stack --region $(AWS_REGION) --stack-name $(STACK_PREFIX)-bootstrap
+	aws cloudformation wait stack-delete-complete --region $(AWS_REGION) --stack-name $(STACK_PREFIX)-bootstrap
+
 # Must go before destroy-eks: this stack imports the cluster's exports.
 destroy-bastion:
 	aws cloudformation delete-stack --region $(AWS_REGION) --stack-name $(STACK_PREFIX)-bastion
@@ -940,7 +944,9 @@ destroy-lbc:
 	aws cloudformation wait stack-delete-complete --region $(AWS_REGION) --stack-name $(STACK_PREFIX)-lbc
 
 # Endpoints must go before the VPC: the VPC's exports are in use until they do.
-destroy-network: destroy-lbc destroy-cdn destroy-alb destroy-bastion destroy-agentcore destroy-lambda destroy-eks destroy-ecs destroy-nat
+destroy-network:
 	aws cloudformation delete-stack --region $(AWS_REGION) --stack-name $(STACK_PREFIX)-endpoints
 	aws cloudformation wait stack-delete-complete --region $(AWS_REGION) --stack-name $(STACK_PREFIX)-endpoints
 	aws cloudformation delete-stack --region $(AWS_REGION) --stack-name $(STACK_PREFIX)-vpc
+
+destroy-all: destroy-lbc destroy-cdn destroy-alb destroy-bastion destroy-agentcore destroy-lambda destroy-eks destroy-ecs destroy-nat destroy-registry destroy-network destroy-bootstrap
