@@ -940,7 +940,7 @@ destroy-lbc:
 	aws cloudformation wait stack-delete-complete --region $(AWS_REGION) --stack-name $(STACK_PREFIX)-lbc
 
 # Endpoints must go before the VPC: the VPC's exports are in use until they do.
-destroy-network: destroy-cdn destroy-lbc destroy-alb destroy-bastion destroy-eks destroy-ecs destroy-agentcore destroy-lambda destroy-nat
+destroy-network: destroy-lbc destroy-cdn destroy-alb destroy-bastion destroy-eks destroy-ecs destroy-agentcore destroy-lambda destroy-nat
 	aws cloudformation delete-stack --region $(AWS_REGION) --stack-name $(STACK_PREFIX)-endpoints
 	aws cloudformation wait stack-delete-complete --region $(AWS_REGION) --stack-name $(STACK_PREFIX)-endpoints
 	aws cloudformation delete-stack --region $(AWS_REGION) --stack-name $(STACK_PREFIX)-vpc
