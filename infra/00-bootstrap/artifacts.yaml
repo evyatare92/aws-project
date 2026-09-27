@@ -15,18 +15,11 @@ Parameters:
     Default: dev
     AllowedValues: [dev, staging, prod]
 
-  NoncurrentVersionExpirationInDays:
-    Type: Number
-    Default: 30
-    MinValue: 1
-
 Resources:
   ArtifactsBucket:
     Type: AWS::S3::Bucket
     Properties:
       BucketName: !Sub '${ProjectName}-${Environment}-artifacts-${AWS::AccountId}-${AWS::Region}'
-      VersioningConfiguration:
-        Status: Enabled
       BucketEncryption:
         ServerSideEncryptionConfiguration:
           - ServerSideEncryptionByDefault:
@@ -42,10 +35,6 @@ Resources:
           - ObjectOwnership: BucketOwnerEnforced
       LifecycleConfiguration:
         Rules:
-          - Id: expire-noncurrent-versions
-            Status: Enabled
-            NoncurrentVersionExpiration:
-              NoncurrentDays: !Ref NoncurrentVersionExpirationInDays
           - Id: abort-incomplete-uploads
             Status: Enabled
             AbortIncompleteMultipartUpload:
