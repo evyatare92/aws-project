@@ -857,6 +857,11 @@ destroy-agentcore:
 	aws cloudformation wait stack-delete-complete --region $(AWS_REGION) --stack-name $(STACK_PREFIX)-agentcore
 
 destroy-bootstrap:
+	@bucket=$$(aws s3api head-bucket --bucket "$(ARTIFACTS_BUCKET)" 2>/dev/null >/dev/null && echo "$(ARTIFACTS_BUCKET)"); \
+	if [ -n "$$bucket" ] && [ "$$bucket" != "None" ]; then \
+		echo "Clearing bucket $$bucket"; \
+		aws s3 rm s3://$$bucket --recursive --region $(AWS_REGION) || true; \
+	fi
 	aws cloudformation delete-stack --region $(AWS_REGION) --stack-name $(STACK_PREFIX)-bootstrap
 	aws cloudformation wait stack-delete-complete --region $(AWS_REGION) --stack-name $(STACK_PREFIX)-bootstrap
 
